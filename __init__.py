@@ -28,6 +28,7 @@ except ImportError as e:
 try:
     from .scene_helpers import (
         get_scene_bounds3d,
+        get_sionna_scene,
         grid_indices_to_center_coordinate,
         coordinate_to_grid_indices
     )
@@ -64,7 +65,7 @@ __all__ = []
 if _coverage_available:
     __all__.extend(['rss_map_full', 'MAX_DEPTH', 'CELL_SIZE', 'SAMPLES_PER_TX', 'THRESHOLD'])
 if _scene_available:
-    __all__.extend(['get_scene_bounds3d', 'grid_indices_to_center_coordinate', 'coordinate_to_grid_indices'])
+    __all__.extend(['get_scene_bounds3d', 'get_sionna_scene', 'grid_indices_to_center_coordinate', 'coordinate_to_grid_indices'])
 if _gen_rss_available:
     __all__.extend(['rss_write_csv', 'rss_write_efficient', 'sanitize_filename_part'])
 if _storage_available:
