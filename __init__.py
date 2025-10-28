@@ -39,12 +39,25 @@ except ImportError as e:
 try:
     from .gen_rss_csv import (
         rss_write_csv,
+        rss_write_efficient,
         sanitize_filename_part
     )
     _gen_rss_available = True
 except ImportError as e:
     print(f"Warning: Could not import gen_rss_csv: {e}")
     _gen_rss_available = False
+
+try:
+    from .storage_utils import (
+        save_rss_data,
+        load_rss_data,
+        get_format_info,
+        benchmark_formats
+    )
+    _storage_available = True
+except ImportError as e:
+    print(f"Warning: Could not import storage_utils: {e}")
+    _storage_available = False
 
 # Build __all__ based on what's available
 __all__ = []
@@ -53,4 +66,6 @@ if _coverage_available:
 if _scene_available:
     __all__.extend(['get_scene_bounds3d', 'grid_indices_to_center_coordinate', 'coordinate_to_grid_indices'])
 if _gen_rss_available:
-    __all__.extend(['rss_write_csv', 'sanitize_filename_part'])
+    __all__.extend(['rss_write_csv', 'rss_write_efficient', 'sanitize_filename_part'])
+if _storage_available:
+    __all__.extend(['save_rss_data', 'load_rss_data', 'get_format_info', 'benchmark_formats'])

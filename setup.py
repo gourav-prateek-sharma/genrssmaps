@@ -42,6 +42,14 @@ setup(
         # Note: sionna is not on PyPI, users need to install it separately
     ],
     extras_require={
+        "all": [
+            "h5py>=3.0.0",
+            "pyarrow>=5.0.0", 
+            "zarr>=2.10.0",
+        ],
+        "hdf5": ["h5py>=3.0.0"],
+        "parquet": ["pyarrow>=5.0.0"],
+        "zarr": ["zarr>=2.10.0"],
         "dev": [
             "pytest>=6.0",
             "black",
