@@ -1,0 +1,71 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "genrssmaps"
+version = "0.1.0"
+description = "A package for generating RSS (Received Signal Strength) maps using Sionna RT"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [
+    {name = "Gourav Prateek Sharma", email = "your.email@example.com"}
+]
+maintainers = [
+    {name = "Gourav Prateek Sharma", email = "your.email@example.com"}
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers", 
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9", 
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+keywords = ["rss", "coverage", "wireless", "sionna", "ray-tracing", "telecommunications"]
+requires-python = ">=3.8"
+dependencies = [
+    "numpy>=1.20.0",
+    "pandas>=1.3.0", 
+    "tensorflow>=2.8.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=6.0",
+    "black",
+    "flake8", 
+    "mypy",
+]
+docs = [
+    "sphinx",
+    "sphinx-rtd-theme",
+]
+
+[project.urls]
+Homepage = "https://github.com/gourav-prateek-sharma/genrssmaps"
+Repository = "https://github.com/gourav-prateek-sharma/genrssmaps.git"
+Issues = "https://github.com/gourav-prateek-sharma/genrssmaps/issues"
+
+[project.scripts]
+gen-rss-csv = "genrssmaps.gen_rss_csv:main"
+gen-tx-pos = "genrssmaps.gen_tx_pos:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["genrssmaps*"]
+
+[tool.black]
+line-length = 88
+target-version = ['py38', 'py39', 'py310', 'py311']
+
+[tool.mypy]
+python_version = "3.8"
+warn_return_any = true
+warn_unused_configs = true
