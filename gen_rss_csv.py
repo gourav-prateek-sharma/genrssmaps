@@ -5,8 +5,8 @@ import os
 import numpy as np
 import pandas as pd
 from sionna.rt import load_scene, scene as rt_scene
-from coverage_helpers import rss_map_full, MAX_DEPTH, CELL_SIZE, SAMPLES_PER_TX
-from scene_helpers import get_scene_bounds3d
+from .coverage_helpers import rss_map_full, MAX_DEPTH, CELL_SIZE, SAMPLES_PER_TX
+from .scene_helpers import get_scene_bounds3d
 import traceback
 import gzip
 import shutil

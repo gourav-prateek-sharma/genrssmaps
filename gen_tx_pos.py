@@ -19,7 +19,7 @@ import os
 import argparse
 import json
 import numpy as np
-from scene_helpers import get_scene_bounds3d, get_sionna_scene
+from .scene_helpers import get_scene_bounds3d, get_sionna_scene
 
 EPS = 1e-9  # tolerance for floating comparisons (meters)
 

@@ -9,14 +9,14 @@ except Exception:
     _HAS_TF = False
 
 # Import only the non-Sionna dependent functions from scene_helpers
-from scene_helpers import grid_indices_to_center_coordinate, coordinate_to_grid_indices
+from .scene_helpers import grid_indices_to_center_coordinate, coordinate_to_grid_indices
 
 # Import Sionna-dependent functions lazily when needed
 # def _import_sionna_scene_helpers():
 #     """Lazy import of Sionna-dependent scene helper functions"""
 #     from scene_helpers import remove_all_transmitters, get_scene_bounds3d, get_sionna_scene, get_scene_name
 #     return remove_all_transmitters, get_scene_bounds3d, get_sionna_scene, get_scene_name
-from scene_helpers import remove_all_transmitters, get_scene_bounds3d, get_sionna_scene, get_scene_name
+from .scene_helpers import remove_all_transmitters, get_scene_bounds3d, get_sionna_scene, get_scene_name
 
 
 import re
