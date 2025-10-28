@@ -14,7 +14,7 @@ setup(
     name="genrssmaps",
     version="0.1.0",
     author="Gourav Prateek Sharma",
-    author_email="your.email@example.com",  # Replace with your email
+    author_email="gourav.4871example.com",  # Replace with your email
     description="A package for generating RSS (Received Signal Strength) maps using Sionna RT",
     long_description=read_readme(),
     long_description_content_type="text/markdown",
