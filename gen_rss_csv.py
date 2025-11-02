@@ -13,6 +13,30 @@ import shutil
 from typing import Tuple, Optional, Dict, Any
 from .storage_utils import save_rss_data, get_format_info
 
+
+def parse_cell_size_string(s: str):
+    """Parse a cell size string into a tuple of floats.
+
+    Supported formats:
+      - "2" -> (2.0, 2.0)
+      - "2,2" -> (2.0, 2.0)
+      - "2,2,2" -> (2.0, 2.0, 2.0)
+      - "2x2x2" or "2 x 2 x 2" -> (2.0, 2.0, 2.0)
+    """
+    if s is None:
+        return None
+    # Normalize separators
+    s_clean = s.replace("x", ",").replace("X", ",").replace(" ", "")
+    parts = [p for p in s_clean.split(',') if p != '']
+    try:
+        vals = [float(p) for p in parts]
+    except Exception:
+        raise ValueError(f"Invalid cell_size format: '{s}'. Use 'a,b' or 'a,b,c' or 'a')")
+    # If single value, duplicate for 2D use-case
+    if len(vals) == 1:
+        return (vals[0], vals[0])
+    return tuple(vals)
+
 def sanitize_filename_part(s: str) -> str:
     """Make a safe filename part (replace commas/spaces and colons)."""
     return s.replace(" ", "_").replace(",", "_").replace(":", "_").replace("/", "_")
@@ -246,6 +270,8 @@ def main():
                         help="Compression level 0-9 (default: 6, higher = better compression)")
     parser.add_argument("--compress", action="store_true",
                         help="Compress output files using gzip (only for CSV format)")
+    parser.add_argument("--cell_size", type=str, default=None,
+                        help="Cell size for RSS grid. Use 'a', 'a,b' or 'a,b,c' (e.g. '2' or '2,2' or '2,2,2'). If omitted, defaults to CELL_SIZE")
     parser.add_argument("--no_metadata", action="store_true",
                         help="Don't include metadata in output files")
     parser.add_argument("--overwrite", action="store_true", help="Overwrite existing output files")
@@ -324,8 +350,17 @@ def main():
         tx_positions = load_tx_positions_from_file(args.tx_positions_file)
         print(f"Loaded {tx_positions.shape[0]} tx positions from {args.tx_positions_file}")
 
+    # Determine cell size: use CLI arg if provided, otherwise default to CELL_SIZE
+    if args.cell_size:
+        try:
+            cell_size_used = parse_cell_size_string(args.cell_size)
+        except ValueError as e:
+            raise ValueError(f"Invalid --cell_size: {e}")
+    else:
+        cell_size_used = CELL_SIZE if hasattr(CELL_SIZE, "__len__") else (CELL_SIZE, CELL_SIZE)
+
     # Cell size used for RSS generation and included in filenames
-    cell_size_for_name = CELL_SIZE if hasattr(CELL_SIZE, "__len__") else (CELL_SIZE, CELL_SIZE)
+    cell_size_for_name = cell_size_used if hasattr(cell_size_used, "__len__") else (cell_size_used, cell_size_used)
 
     # Scan output directory for existing files matching scene and cell size
     existing_files = gather_existing_files(args.out_dir, args.scene, cell_size_for_name, args.format, args.compress)
@@ -362,7 +397,7 @@ def main():
                 
                 rss_array, out_file = rss_write_efficient(
                     scene_obj, tx_position=pos,
-                    max_depth=MAX_DEPTH, cell_size=CELL_SIZE,
+                    max_depth=MAX_DEPTH, cell_size=cell_size_used,
                     samples_per_tx=SAMPLES_PER_TX, 
                     output_file=base_path,
                     format_type=args.format,
@@ -373,7 +408,7 @@ def main():
                 # Use legacy CSV function
                 rss_array, out_file = rss_write_csv(
                     scene_obj, tx_position=pos,
-                    max_depth=MAX_DEPTH, cell_size=CELL_SIZE,
+                    max_depth=MAX_DEPTH, cell_size=cell_size_used,
                     samples_per_tx=SAMPLES_PER_TX, 
                     csv_file=expected_path,
                     compress=args.compress
