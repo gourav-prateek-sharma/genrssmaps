@@ -47,6 +47,11 @@ def rss_write_csv(scene_obj, tx_position, max_depth=MAX_DEPTH, cell_size=CELL_SI
     Generates the RSS tensor using rss_map_full and writes it to a CSV file.
     Returns (rss_array (2D numpy), final outfile path).
     """
+    try:
+        import tensorflow as tf
+    except ImportError:
+        raise RuntimeError("rss_write_csv requires tensorflow. Install with: pip install tensorflow")
+    
     # Generate RSS (we handle file writing here)
     rss = rss_map_full(scene_obj, tx_position=tx_position, max_depth=max_depth,
                        cell_size=cell_size, samples_per_tx=samples_per_tx, csv_file=None)
