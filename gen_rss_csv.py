@@ -378,7 +378,6 @@ def main():
         expected_path = os.path.join(args.out_dir, expected_name)
         if os.path.exists(expected_path) and not args.overwrite:
             # already present, skip
-            print(expected_path)
             continue
         # For zarr format, also check if directory exists
         if args.format.lower() == "zarr" and os.path.isdir(expected_path) and not args.overwrite:
@@ -400,7 +399,6 @@ def main():
                 base_path = os.path.splitext(expected_path)[0]
                 if expected_path.endswith('.zarr'):
                     base_path = expected_path[:-5]  # Remove .zarr
-                print(base_path)
                 rss_array, out_file = rss_write_efficient(
                     scene_obj, tx_position=pos,
                     max_depth=MAX_DEPTH, cell_size=cell_size_used,
