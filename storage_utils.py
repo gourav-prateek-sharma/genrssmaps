@@ -66,19 +66,26 @@ def save_rss_data(
         if rss_array.ndim != 2:
             raise ValueError(f"RSS array must be 2D. Got shape: {rss_array.shape}")
     
-    # Get base path without extension
-    base_path = Path(filepath).with_suffix('')
-    
+    # Get base path without known extension (safe for filenames containing dots)
+    def _strip_known_ext(fp: str) -> str:
+        known_exts = ['.csv.gz', '.csv', '.npz', '.h5', '.hdf5', '.parquet', '.zarr']
+        for ext in known_exts:
+            if fp.endswith(ext):
+                return fp[:-len(ext)]
+        return fp
+
+    base_str = _strip_known_ext(str(filepath))
+
     if format_type.lower() == "npz":
-        return _save_npz(rss_array, base_path, compression_level, metadata)
+        return _save_npz(rss_array, base_str, compression_level, metadata)
     elif format_type.lower() == "hdf5" or format_type.lower() == "h5":
-        return _save_hdf5(rss_array, base_path, compression_level, metadata)
+        return _save_hdf5(rss_array, base_str, compression_level, metadata)
     elif format_type.lower() == "parquet":
-        return _save_parquet(rss_array, base_path, compression_level, metadata)
+        return _save_parquet(rss_array, base_str, compression_level, metadata)
     elif format_type.lower() == "zarr":
-        return _save_zarr(rss_array, base_path, compression_level, metadata, **kwargs)
+        return _save_zarr(rss_array, base_str, compression_level, metadata, **kwargs)
     elif format_type.lower() == "csv":
-        return _save_csv(rss_array, base_path, compression_level > 0)
+        return _save_csv(rss_array, base_str, compression_level > 0)
     else:
         raise ValueError(f"Unsupported format: {format_type}")
 
@@ -110,9 +117,9 @@ def load_rss_data(filepath: str) -> Tuple[np.ndarray, Dict[str, Any]]:
         raise ValueError(f"Unsupported file format: {path.suffix}")
 
 
-def _save_npz(rss_array: np.ndarray, base_path: Path, compression_level: int, metadata: Optional[Dict]) -> str:
+def _save_npz(rss_array: np.ndarray, base_str: str, compression_level: int, metadata: Optional[Dict]) -> str:
     """Save as compressed NumPy .npz format"""
-    output_path = str(base_path.with_suffix('.npz'))
+    output_path = base_str + '.npz'
     
     # Prepare data dictionary
     save_dict = {'rss_data': rss_array}
@@ -151,12 +158,12 @@ def _load_npz(filepath: str) -> Tuple[np.ndarray, Dict[str, Any]]:
     return rss_array, metadata
 
 
-def _save_hdf5(rss_array: np.ndarray, base_path: Path, compression_level: int, metadata: Optional[Dict]) -> str:
+def _save_hdf5(rss_array: np.ndarray, base_str: str, compression_level: int, metadata: Optional[Dict]) -> str:
     """Save as HDF5 format"""
     if not HAS_HDF5:
         raise ImportError("h5py is required for HDF5 format. Install with: pip install h5py")
     
-    output_path = str(base_path.with_suffix('.h5'))
+    output_path = base_str + '.h5'
     
     with h5py.File(output_path, 'w') as f:
         # Save main data with compression
@@ -196,12 +203,12 @@ def _load_hdf5(filepath: str) -> Tuple[np.ndarray, Dict[str, Any]]:
     return rss_array, metadata
 
 
-def _save_parquet(rss_array: np.ndarray, base_path: Path, compression_level: int, metadata: Optional[Dict]) -> str:
+def _save_parquet(rss_array: np.ndarray, base_str: str, compression_level: int, metadata: Optional[Dict]) -> str:
     """Save as Parquet format"""
     if not HAS_PARQUET:
         raise ImportError("pyarrow is required for Parquet format. Install with: pip install pyarrow")
     
-    output_path = str(base_path.with_suffix('.parquet'))
+    output_path = base_str + '.parquet'
     
     # Convert 2D array to DataFrame with position indices
     height, width = rss_array.shape
@@ -281,12 +288,12 @@ def _load_parquet(filepath: str) -> Tuple[np.ndarray, Dict[str, Any]]:
     return rss_array, metadata
 
 
-def _save_zarr(rss_array: np.ndarray, base_path: Path, compression_level: int, metadata: Optional[Dict], **kwargs) -> str:
+def _save_zarr(rss_array: np.ndarray, base_str: str, compression_level: int, metadata: Optional[Dict], **kwargs) -> str:
     """Save as Zarr format"""
     if not HAS_ZARR:
         raise ImportError("zarr is required for Zarr format. Install with: pip install zarr")
     
-    output_path = str(base_path.with_suffix('.zarr'))
+    output_path = base_str + '.zarr'
     
     # Configure compression
     if compression_level > 0:
@@ -324,14 +331,14 @@ def _load_zarr(filepath: str) -> Tuple[np.ndarray, Dict[str, Any]]:
     return rss_array, metadata
 
 
-def _save_csv(rss_array: np.ndarray, base_path: Path, compress: bool) -> str:
+def _save_csv(rss_array: np.ndarray, base_str: str, compress: bool) -> str:
     """Save as CSV format (legacy support)"""
     if compress:
-        output_path = str(base_path.with_suffix('.csv.gz'))
+        output_path = base_str + '.csv.gz'
         df = pd.DataFrame(rss_array)
         df.to_csv(output_path, index=False, header=False, compression='gzip')
     else:
-        output_path = str(base_path.with_suffix('.csv'))
+        output_path = base_str + '.csv'
         df = pd.DataFrame(rss_array)
         df.to_csv(output_path, index=False, header=False)
     
