@@ -279,6 +279,8 @@ def main():
                         help="Cell size for RSS grid. Use 'a', 'a,b' or 'a,b,c' (e.g. '2' or '2,2' or '2,2,2'). If omitted, defaults to CELL_SIZE")
     parser.add_argument("--no_metadata", action="store_true",
                         help="Don't include metadata in output files")
+    parser.add_argument("--skip_list_file", type=str, default=None,
+                        help="Path to a file that lists existing filenames (one per line). Entries matching expected filenames will be skipped.")
     parser.add_argument("--overwrite", action="store_true", help="Overwrite existing output files")
     parser.add_argument("--benchmark", action="store_true",
                         help="Run storage format benchmark and exit")
@@ -332,6 +334,19 @@ def main():
         return
 
     os.makedirs(args.out_dir, exist_ok=True)
+    # If provided, read skip list file (contains existing filenames to skip)
+    skip_names = set()
+    if args.skip_list_file:
+        try:
+            with open(args.skip_list_file, 'r', encoding='utf-8') as f:
+                for line in f:
+                    ln = line.strip()
+                    if not ln:
+                        continue
+                    # Accept either basename or full path; store basename for comparison
+                    skip_names.add(os.path.basename(ln))
+        except Exception as e:
+            raise ValueError(f"Could not read skip list file '{args.skip_list_file}': {e}")
 
     # Load the scene attribute
     try:
@@ -370,18 +385,27 @@ def main():
     # Scan output directory for existing files matching scene and cell size
     existing_files = gather_existing_files(args.out_dir, args.scene, cell_size_for_name, args.format, args.compress)
     print(f"Found {len(existing_files)} existing RSS files in '{args.out_dir}' for scene '{args.scene}' and cell {cell_size_for_name}.")
+    if skip_names:
+        print(f"Loaded {len(skip_names)} entries from skip list file '{args.skip_list_file}'. These filenames will be skipped.")
 
     # Build list of positions to generate (skip ones whose expected filename already exists unless overwrite)
     tasks = []
     for pos in tx_positions:
         expected_name = make_expected_filename(args.scene, pos, cell_size_for_name, args.format, args.compress)
         expected_path = os.path.join(args.out_dir, expected_name)
-        if os.path.exists(expected_path) and not args.overwrite:
-            # already present, skip
+
+        # Skip if in skip list file
+        if expected_name in skip_names:
             continue
+
+        # Skip if file exists on disk (unless overwrite)
+        if os.path.exists(expected_path) and not args.overwrite:
+            continue
+
         # For zarr format, also check if directory exists
         if args.format.lower() == "zarr" and os.path.isdir(expected_path) and not args.overwrite:
             continue
+
         tasks.append((pos, expected_path))
 
     to_generate = len(tasks)
