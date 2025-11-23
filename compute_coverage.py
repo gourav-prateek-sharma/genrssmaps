@@ -213,25 +213,79 @@ def main(argv: Optional[list] = None):
             sys.exit(2)
 
         supported_exts = ['.csv', '.csv.gz', '.npz', '.h5', '.hdf5', '.parquet', '.zarr']
-        results = []
-        # list files and filter
-        for fname in sorted(os.listdir(dir_path)):
-            fpath = os.path.join(dir_path, fname)
-            if not os.path.isfile(fpath):
-                continue
-            lower = fname.lower()
-            if any(lower.endswith(ext) for ext in supported_exts):
+
+        # compute output CSV path including threshold token (same logic as before)
+        out_csv = args.output
+        try:
+            thr_val = threshold
+            thr_token = f"thr{str(thr_val).replace('.', 'p')}dBm"
+        except Exception:
+            thr_token = None
+
+        if thr_token:
+            out_dir = os.path.dirname(out_csv)
+            out_base = os.path.basename(out_csv)
+            name, ext = os.path.splitext(out_base)
+            if thr_token not in name:
+                name = f"{name}_{thr_token}"
+            out_csv_final = os.path.join(out_dir, name + ext) if out_dir else name + ext
+        else:
+            out_csv_final = out_csv
+
+        # If the summary already exists, read already-processed filenames and resume
+        import csv
+        existing_filenames = set()
+        if os.path.exists(out_csv_final):
+            try:
+                with open(out_csv_final, 'r', newline='') as ef:
+                    reader = csv.reader(ef)
+                    header = next(reader, None)
+                    fname_idx = 0
+                    if header and 'filename' in header:
+                        fname_idx = header.index('filename')
+                    for row in reader:
+                        if row:
+                            existing_filenames.add(row[fname_idx])
+                if args.verbose:
+                    print(f"Resuming: found {len(existing_filenames)} entries in {out_csv_final}")
+            except Exception as e:
+                print(f"Warning: could not read existing output file '{out_csv_final}': {e}")
+
+        # Open output file for append (or create) and write header if needed
+        mode = 'a' if os.path.exists(out_csv_final) else 'w'
+        with open(out_csv_final, mode, newline='') as out_f:
+            writer = csv.writer(out_f)
+            if mode == 'w':
+                writer.writerow(['filename', 'x', 'y', 'z', 'coverage'])
+
+            processed = 0
+            # iterate files in deterministic order and append results as they complete
+            for fname in sorted(os.listdir(dir_path)):
+                if fname in existing_filenames:
+                    # skip already-processed
+                    continue
+                fpath = os.path.join(dir_path, fname)
+                if not os.path.isfile(fpath):
+                    continue
+                lower = fname.lower()
+                if not any(lower.endswith(ext) for ext in supported_exts):
+                    continue
                 try:
                     if lower.endswith('.csv.gz'):
-                        # reuse specialized function when possible to get coords
                         try:
                             tx_x, tx_y, tx_z, coverage = compute_coverage_from_csv_gz(fpath, rx_grid_indices=rx_indices, threshold_dbm=threshold, scene_name=args.scene)
-                            results.append((fname, tx_x, tx_y, tx_z, coverage))
+                            writer.writerow([fname, tx_x, tx_y, tx_z, coverage])
+                            out_f.flush()
+                            try:
+                                os.fsync(out_f.fileno())
+                            except Exception:
+                                pass
+                            existing_filenames.add(fname)
+                            processed += 1
                             if args.verbose:
                                 print(f"Processed {fname} -> coverage={coverage:.6f}")
                             continue
                         except Exception:
-                            # fallback to generic loader
                             pass
 
                     arr = _load_array_from_file(fpath)
@@ -241,21 +295,20 @@ def main(argv: Optional[list] = None):
                         tx_x, tx_y, tx_z = coords
                     else:
                         tx_x = tx_y = tx_z = float('nan')
-                    results.append((fname, tx_x, tx_y, tx_z, coverage))
+                    writer.writerow([fname, tx_x, tx_y, tx_z, coverage])
+                    out_f.flush()
+                    try:
+                        os.fsync(out_f.fileno())
+                    except Exception:
+                        pass
+                    existing_filenames.add(fname)
+                    processed += 1
                     if args.verbose:
                         print(f"Processed {fname} -> coverage={coverage:.6f}")
                 except Exception as e:
                     print(f"Skipping {fname}: {e}")
 
-        # write output CSV
-        import csv
-        out_csv = args.output
-        with open(out_csv, 'w', newline='') as f:
-            writer = csv.writer(f)
-            writer.writerow(['filename', 'x', 'y', 'z', 'coverage'])
-            for row in results:
-                writer.writerow(row)
-        print(f"Wrote coverage data for {len(results)} files to {out_csv}")
+        print(f"Wrote/updated coverage data; total entries now: {len(existing_filenames)} -> {out_csv_final}")
 
 
 if __name__ == '__main__':
