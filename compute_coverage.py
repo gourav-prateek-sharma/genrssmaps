@@ -8,7 +8,8 @@ Usage examples:
   # Single file (auto-detect format by extension)
   python -m genrssmaps.compute_coverage --file /path/to/rss_munich_1.0,2.0,20.0.csv.gz --scene munich
 
-  # Directory -> output CSV summarizing filename,x,y,z,coverage
+  # 
+  # ory -> output CSV summarizing filename,x,y,z,coverage
   python -m genrssmaps.compute_coverage --dir /path/to/dir --output coverage_summary.csv --scene munich
 
 This module delegates to functions in `coverage_helpers` for the actual coverage
@@ -151,8 +152,8 @@ def main(argv: Optional[list] = None):
                         help="Output CSV path when running on a directory. Default: coverage_summary.csv")
     parser.add_argument("--format", type=str, default=None,
                         help="Force input format (csv,npz,h5,parquet,zarr). By default auto-detect from file extension")
-    parser.add_argument("--threshold", type=float, default=None,
-                        help="Coverage threshold in dBm (default: package THRESHOLD)")
+    parser.add_argument("--threshold", type=float, nargs='+', default=None,
+                        help="Coverage threshold(s) in dBm (space-separated if multiple). Default: package THRESHOLD")
     parser.add_argument("--scene", type=str, default="munich",
                         help="Scene name used to parse filenames (default: munich)")
     parser.add_argument("--rx_indices_file", type=str, default=None,
@@ -161,7 +162,11 @@ def main(argv: Optional[list] = None):
 
     args = parser.parse_args(argv)
 
-    threshold = args.threshold if args.threshold is not None else THRESHOLD
+    # Handle multiple thresholds
+    if args.threshold is not None:
+        thresholds = list(args.threshold)
+    else:
+        thresholds = [THRESHOLD]
 
     rx_indices = None
     if args.rx_indices_file:
@@ -177,33 +182,50 @@ def main(argv: Optional[list] = None):
             print(f"File not found: {file_path}")
             sys.exit(2)
 
-        # If CSV.GZ and filename encodes coords, reuse specialized function to extract tx coords
+        # Load the array once
         if file_path.endswith('.csv.gz'):
             try:
-                tx_x, tx_y, tx_z, coverage = compute_coverage_from_csv_gz(
-                    file_path, rx_grid_indices=rx_indices, threshold_dbm=threshold, scene_name=args.scene
+                tx_x, tx_y, tx_z, _ = compute_coverage_from_csv_gz(
+                    file_path, rx_grid_indices=rx_indices, threshold_dbm=thresholds[0], scene_name=args.scene
                 )
-                print(f"{os.path.basename(file_path)} -> tx=({tx_x:.6f},{tx_y:.6f},{tx_z:.6f}), coverage={coverage:.6f}")
-                return
+                coords_found = True
             except Exception:
-                # Fall back to generic loader if specialized fails
-                pass
-
-        # Generic loading path
-        try:
-            arr = _load_array_from_file(file_path, forced_format=(args.format and args.format.lower()))
-        except Exception as e:
-            print(f"Error loading file '{file_path}': {e}")
-            raise
-
-        # compute coverage
-        coverage = compute_coverage_from_arr(arr, threshold_dbm=threshold)
-        coords = _parse_tx_coords_from_filename(file_path, args.scene)
-        if coords is not None:
-            tx_x, tx_y, tx_z = coords
-            print(f"{os.path.basename(file_path)} -> tx=({tx_x:.6f},{tx_y:.6f},{tx_z:.6f}), coverage={coverage:.6f}")
+                coords_found = False
+                arr = _load_array_from_file(file_path, forced_format=(args.format and args.format.lower()))
+                coords = _parse_tx_coords_from_filename(file_path, args.scene)
+                if coords is not None:
+                    tx_x, tx_y, tx_z = coords
+                    coords_found = True
         else:
-            print(f"{os.path.basename(file_path)} -> coverage={coverage:.6f}")
+            coords_found = False
+            arr = _load_array_from_file(file_path, forced_format=(args.format and args.format.lower()))
+            coords = _parse_tx_coords_from_filename(file_path, args.scene)
+            if coords is not None:
+                tx_x, tx_y, tx_z = coords
+                coords_found = True
+
+        # Compute coverage for each threshold
+        if len(thresholds) == 1:
+            # Single threshold: print simple format
+            if coords_found and 'arr' not in locals():
+                arr = _load_array_from_file(file_path, forced_format=(args.format and args.format.lower()))
+            coverage = compute_coverage_from_arr(arr, threshold_dbm=thresholds[0])
+            if coords_found:
+                print(f"{os.path.basename(file_path)} -> tx=({tx_x:.6f},{tx_y:.6f},{tx_z:.6f}), coverage={coverage:.6f}")
+            else:
+                print(f"{os.path.basename(file_path)} -> coverage={coverage:.6f}")
+        else:
+            # Multiple thresholds: print all
+            if 'arr' not in locals():
+                arr = _load_array_from_file(file_path, forced_format=(args.format and args.format.lower()))
+            if coords_found:
+                output = f"{os.path.basename(file_path)} -> tx=({tx_x:.6f},{tx_y:.6f},{tx_z:.6f})"
+            else:
+                output = f"{os.path.basename(file_path)}"
+            for thr in thresholds:
+                coverage = compute_coverage_from_arr(arr, threshold_dbm=thr)
+                output += f", coverage@{thr}dBm={coverage:.6f}"
+            print(output)
 
     else:
         # directory mode: gather supported files and iterate
@@ -214,23 +236,33 @@ def main(argv: Optional[list] = None):
 
         supported_exts = ['.csv', '.csv.gz', '.npz', '.h5', '.hdf5', '.parquet', '.zarr']
 
-        # compute output CSV path including threshold token (same logic as before)
+        # Compute output CSV path including threshold tokens
         out_csv = args.output
         try:
-            thr_val = threshold
-            thr_token = f"thr{str(thr_val).replace('.', 'p')}dBm"
+            # For multiple thresholds, include all in filename; for single, include just that one
+            if len(thresholds) == 1:
+                thr_token = str(thresholds[0]).replace('.', 'p')
+                thr_tokens_str = thr_token
+            else:
+                thr_tokens_str = "_".join([str(t).replace('.', 'p') for t in thresholds])
         except Exception:
-            thr_token = None
+            thr_tokens_str = None
 
-        if thr_token:
+        # If user used the default output name, prefer coverage_summary_{threshold(s)}.csv
+        default_output_name = 'coverage_summary.csv'
+        if args.output == default_output_name and thr_tokens_str is not None:
             out_dir = os.path.dirname(out_csv)
-            out_base = os.path.basename(out_csv)
-            name, ext = os.path.splitext(out_base)
-            if thr_token not in name:
-                name = f"{name}_{thr_token}"
-            out_csv_final = os.path.join(out_dir, name + ext) if out_dir else name + ext
+            out_csv_final = os.path.join(out_dir, f"coverage_summary_{thr_tokens_str}.csv") if out_dir else f"coverage_summary_{thr_tokens_str}.csv"
         else:
-            out_csv_final = out_csv
+            if thr_tokens_str:
+                out_dir = os.path.dirname(out_csv)
+                out_base = os.path.basename(out_csv)
+                name, ext = os.path.splitext(out_base)
+                if thr_tokens_str not in name:
+                    name = f"{name}_{thr_tokens_str}"
+                out_csv_final = os.path.join(out_dir, name + ext) if out_dir else name + ext
+            else:
+                out_csv_final = out_csv
 
         # If the summary already exists, read already-processed filenames and resume
         import csv
@@ -256,7 +288,11 @@ def main(argv: Optional[list] = None):
         with open(out_csv_final, mode, newline='') as out_f:
             writer = csv.writer(out_f)
             if mode == 'w':
-                writer.writerow(['filename', 'x', 'y', 'z', 'coverage'])
+                # Build header based on number of thresholds
+                header = ['filename', 'x', 'y', 'z']
+                for thr in thresholds:
+                    header.append(f"coverage_thr{thr}")
+                writer.writerow(header)
 
             processed = 0
             # iterate files in deterministic order and append results as they complete
@@ -271,31 +307,32 @@ def main(argv: Optional[list] = None):
                 if not any(lower.endswith(ext) for ext in supported_exts):
                     continue
                 try:
+                    # Load array once
+                    arr = None
+                    tx_x = tx_y = tx_z = ""
+                    
                     if lower.endswith('.csv.gz'):
                         try:
-                            tx_x, tx_y, tx_z, coverage = compute_coverage_from_csv_gz(fpath, rx_grid_indices=rx_indices, threshold_dbm=threshold, scene_name=args.scene)
-                            writer.writerow([fname, tx_x, tx_y, tx_z, coverage])
-                            out_f.flush()
-                            try:
-                                os.fsync(out_f.fileno())
-                            except Exception:
-                                pass
-                            existing_filenames.add(fname)
-                            processed += 1
-                            if args.verbose:
-                                print(f"Processed {fname} -> coverage={coverage:.6f}")
-                            continue
+                            tx_x, tx_y, tx_z, _ = compute_coverage_from_csv_gz(fpath, rx_grid_indices=rx_indices, threshold_dbm=thresholds[0], scene_name=args.scene)
                         except Exception:
-                            pass
-
-                    arr = _load_array_from_file(fpath)
-                    coverage = compute_coverage_from_arr(arr, threshold_dbm=threshold)
-                    coords = _parse_tx_coords_from_filename(fname, args.scene)
-                    if coords is not None:
-                        tx_x, tx_y, tx_z = coords
-                    else:
-                        tx_x = tx_y = tx_z = float('nan')
-                    writer.writerow([fname, tx_x, tx_y, tx_z, coverage])
+                            coords = _parse_tx_coords_from_filename(fname, args.scene)
+                            if coords is not None:
+                                tx_x, tx_y, tx_z = coords
+                    
+                    if arr is None:
+                        arr = _load_array_from_file(fpath)
+                        if tx_x == "":  # coords not yet set
+                            coords = _parse_tx_coords_from_filename(fname, args.scene)
+                            if coords is not None:
+                                tx_x, tx_y, tx_z = coords
+                    
+                    # Compute coverage for each threshold
+                    row = [fname, tx_x, tx_y, tx_z]
+                    for thr in thresholds:
+                        coverage = compute_coverage_from_arr(arr, threshold_dbm=thr)
+                        row.append(coverage)
+                    
+                    writer.writerow(row)
                     out_f.flush()
                     try:
                         os.fsync(out_f.fileno())
@@ -304,7 +341,7 @@ def main(argv: Optional[list] = None):
                     existing_filenames.add(fname)
                     processed += 1
                     if args.verbose:
-                        print(f"Processed {fname} -> coverage={coverage:.6f}")
+                        print(f"Processed {fname}")
                 except Exception as e:
                     print(f"Skipping {fname}: {e}")
 

@@ -226,29 +226,53 @@ def compute_coverage_from_csv_gz(file_path, rx_grid_indices=None, threshold_dbm=
 def compute_coverage_for_directory_to_csv(dir_path, output_csv, threshold_dbm=THRESHOLD, scene_name="munich", rx_grid_indices=None):
     """
     For all rss_<scene_name>_*.csv.gz files in the directory, compute coverage and write to a CSV file.
-    Each line in the output CSV will be: x, y, z, coverage
+    If threshold_dbm is a list, compute coverage for each threshold separately.
+    
     Args:
         dir_path (str): Directory containing rss_<scene_name>_*.csv.gz files
         output_csv (str): Path to output CSV file
-        threshold_dbm (float): Coverage threshold in dBm (default: global THRESHOLD)
+        threshold_dbm (float or list): Coverage threshold(s) in dBm (default: global THRESHOLD)
+                                       If list, coverage is computed for each threshold
         scene_name (str): Scene name (default: "munich")
         rx_grid_indices (array-like): Optional list of receiver grid indices (N x 2)
     """
     import glob
-    results = []
+    
+    # Normalize threshold_dbm to a list
+    if isinstance(threshold_dbm, (list, tuple)):
+        thresholds = list(threshold_dbm)
+    else:
+        thresholds = [threshold_dbm]
+    
     pattern = os.path.join(dir_path, f'rss_{scene_name}_*.csv.gz')
     files = glob.glob(pattern)
     total = len(files)
-    print(f"Found {total} files to process.")
+    print(f"Found {total} files to process with {len(thresholds)} threshold(s).")
+    
+    results = []
     for idx, file_path in enumerate(files, 1):
         try:
-            tx_x, tx_y, tx_z, coverage = compute_coverage_from_csv_gz(file_path, rx_grid_indices=rx_grid_indices, threshold_dbm=threshold_dbm, scene_name=scene_name)
-            results.append([tx_x, tx_y, tx_z, coverage])
+            tx_x, tx_y, tx_z, _ = compute_coverage_from_csv_gz(file_path, rx_grid_indices=rx_grid_indices, threshold_dbm=thresholds[0], scene_name=scene_name)
+            row = [tx_x, tx_y, tx_z]
+            
+            # Compute coverage for each threshold
+            for thr in thresholds:
+                _, _, _, coverage = compute_coverage_from_csv_gz(file_path, rx_grid_indices=rx_grid_indices, threshold_dbm=thr, scene_name=scene_name)
+                row.append(coverage)
+            
+            results.append(row)
             print(f"\rProcessed {idx}/{total}: {os.path.basename(file_path)}", end="", flush=True)
         except Exception as e:
             print(f"\nSkipping {file_path}: {e}")
+    
     print("\nAll files processed.")
-    df = pd.DataFrame(results, columns=["x", "y", "z", "coverage"])
+    
+    # Build column names
+    columns = ["x", "y", "z"]
+    for thr in thresholds:
+        columns.append(f"coverage_thr{thr}")
+    
+    df = pd.DataFrame(results, columns=columns)
     df.to_csv(output_csv, index=False)
     print(f"Wrote coverage data for {len(results)} files to {output_csv}")
 
