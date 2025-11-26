@@ -147,7 +147,14 @@ def plot_coverage_3d(data_or_csv, output_file=None):
     else:
         df = pd.read_csv(data_or_csv)
         tx_positions = df[['x', 'y']].values
-        coverage_values = df['coverage'].values
+        # Auto-detect coverage column
+        if 'coverage' in df.columns:
+            coverage_values = df['coverage'].values
+        else:
+            cov_cols = [c for c in df.columns if c.startswith('coverage_thr')]
+            if not cov_cols:
+                raise ValueError("No coverage column found in summary file. Columns: " + str(df.columns))
+            coverage_values = df[cov_cols[0]].values
 
     fig = plt.figure(figsize=(12, 8))
     ax = fig.add_subplot(111, projection='3d')
