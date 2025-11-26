@@ -50,16 +50,52 @@ def load_rx_indices(path: str):
 
 
 def _parse_tx_coords_from_filename(fname: str, scene_name: str) -> Optional[Tuple[float, float, float]]:
-    """Try to parse tx coords from filenames like
-    `rss_<scene>_<x>,<y>,<z>.<ext>` where ext may be `csv.gz`, `h5`, `npz`, etc.
-    Returns (x,y,z) or None.
+    """Try to parse tx coords from filenames using several common patterns.
+
+    Attempts (in order):
+    - `rss_{scene}_{x},{y},{z}.ext` (legacy exact match)
+    - `_x{val}_y{val}_z{val}` tokens anywhere in the basename
+    - three comma-separated floats anywhere in the basename
+    - fallback: take the last three numeric values in the basename
+
+    Returns (x,y,z) or None when parsing fails.
     """
-    # Accept extensions like .csv.gz, .csv, .h5, .npz, .parquet, .zarr
-    pattern = rf"rss_{re.escape(scene_name)}_([\-\d.]+),([\-\d.]+),([\-\d.]+)\.(?:csv\.gz|csv|h5|hdf5|npz|parquet|zarr)$"
-    m = re.match(pattern, os.path.basename(fname))
-    if not m:
-        return None
-    return tuple(map(float, m.groups()))
+    base = os.path.basename(fname)
+    # 1) exact rss_{scene}_x,y,z.ext match (preserve previous behavior)
+    try:
+        pattern = rf"rss_{re.escape(scene_name)}_([\-\d.]+),([\-\d.]+),([\-\d.]+)\.(?:csv\.gz|csv|h5|hdf5|npz|parquet|zarr)$"
+        m = re.match(pattern, base)
+        if m:
+            return tuple(map(float, m.groups()))
+    except Exception:
+        pass
+
+    # 2) tokenized _x{val}_y{val}_z{val}
+    m = re.search(r"_x(?P<x>[-+]?\d*\.?\d+)_y(?P<y>[-+]?\d*\.?\d+)_z(?P<z>[-+]?\d*\.?\d+)", base)
+    if m:
+        try:
+            return float(m.group('x')), float(m.group('y')), float(m.group('z'))
+        except Exception:
+            pass
+
+    # 3) three comma-separated floats anywhere
+    m = re.search(r"([-+]?\d*\.?\d+),([-+]?\d*\.?\d+),([-+]?\d*\.?\d+)", base)
+    if m:
+        try:
+            return float(m.group(1)), float(m.group(2)), float(m.group(3))
+        except Exception:
+            pass
+
+    # 4) fallback: last three numeric tokens in the filename
+    nums = re.findall(r"[-+]?[0-9]*\.?[0-9]+", base)
+    if len(nums) >= 3:
+        try:
+            x, y, z = nums[-3], nums[-2], nums[-1]
+            return float(x), float(y), float(z)
+        except Exception:
+            pass
+
+    return None
 
 
 def _load_array_from_npz(path: str) -> np.ndarray:
