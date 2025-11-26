@@ -6,8 +6,20 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 from scipy.interpolate import griddata
 import os
-from coverage_helpers import compute_coverage_from_arr
-from rate_helpers import compute_rate_from_arr
+try:
+    from .coverage_helpers import (
+        compute_coverage_from_csv_gz,
+        compute_coverage_from_arr,
+        THRESHOLD,
+    )
+except Exception as e:
+    print(f"Error importing coverage helpers: {e}")
+    raise
+try:
+    from .rate_helpers import compute_rate_from_arr, compute_rate_from_csv
+except Exception as e:
+    print(f"Error importing rate helpers: {e}")
+    raise
 
 def plot_rss_3d(csv_file, scale_factor=1.0, min_rss=None, max_rss=None, output_file=None):
     """
