@@ -120,14 +120,21 @@ def plot_rss_strength(file_path: str, output_path: Optional[str] = None,
     fig = plt.figure(figsize=(12, 8))
     ax = fig.add_subplot(111, projection='3d')
 
-    # Generate receiver grid coordinates
     ny, nx = rss_dbm.shape
     x = np.arange(nx)
     y = np.arange(ny)
     X, Y = np.meshgrid(x, y)
 
-    surf = ax.plot_surface(X, Y, rss_dbm, cmap=cmap, vmin=vmin, vmax=vmax, edgecolor='none')
-    fig.colorbar(surf, ax=ax, shrink=0.5, aspect=10, label='RSS Strength (dBm)')
+    # If grid is regular, plot surface
+    try:
+        surf = ax.plot_surface(X, Y, rss_dbm, cmap=cmap, vmin=vmin, vmax=vmax, edgecolor='none')
+    except Exception:
+        # Fallback: scatter plot
+        ax.scatter(X.flatten(), Y.flatten(), rss_dbm.flatten(), c=rss_dbm.flatten(), cmap=cmap)
+        surf = None
+
+    if surf:
+        fig.colorbar(surf, ax=ax, shrink=0.5, aspect=10, label='RSS Strength (dBm)')
 
     ax.set_xlabel('Receiver X Index')
     ax.set_ylabel('Receiver Y Index')
@@ -220,28 +227,21 @@ def plot_coverage_map(summary_csv: str, thresholds: Optional[List[float]] = None
         fig = plt.figure(figsize=(12, 8))
         ax = fig.add_subplot(111, projection='3d')
 
-        # Remove NaNs for plotting
         mask = (~np.isnan(x)) & (~np.isnan(y)) & (~np.isnan(coverage))
         x_plot = x[mask]
         y_plot = y[mask]
         z_plot = coverage[mask]
 
-        # Try to create a grid if possible
+        # Try to create a grid for surface plot
         try:
-            x_unique = np.unique(x_plot)
-            y_unique = np.unique(y_plot)
-            if len(x_unique) > 1 and len(y_unique) > 1:
-                X, Y = np.meshgrid(x_unique, y_unique)
-                Z = np.full_like(X, np.nan, dtype=float)
-                for xi, yi, cov in zip(x_plot, y_plot, z_plot):
-                    xi_idx = np.where(x_unique == xi)[0]
-                    yi_idx = np.where(y_unique == yi)[0]
-                    if len(xi_idx) > 0 and len(yi_idx) > 0:
-                        Z[yi_idx[0], xi_idx[0]] = cov
-                surf = ax.plot_surface(X, Y, Z, cmap=cmap, edgecolor='none')
-            else:
-                surf = ax.scatter(x_plot, y_plot, z_plot, c=z_plot, cmap=cmap)
+            from scipy.interpolate import griddata
+            xi = np.linspace(np.min(x_plot), np.max(x_plot), 100)
+            yi = np.linspace(np.min(y_plot), np.max(y_plot), 100)
+            XI, YI = np.meshgrid(xi, yi)
+            ZI = griddata((x_plot, y_plot), z_plot, (XI, YI), method='linear')
+            surf = ax.plot_surface(XI, YI, ZI, cmap=cmap, edgecolor='none')
         except Exception:
+            # Fallback: scatter plot
             surf = ax.scatter(x_plot, y_plot, z_plot, c=z_plot, cmap=cmap)
 
         fig.colorbar(surf, ax=ax, shrink=0.5, aspect=10, label='Coverage')
