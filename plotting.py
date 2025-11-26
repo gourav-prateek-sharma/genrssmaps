@@ -158,8 +158,16 @@ def plot_coverage_3d(data_or_csv, output_file=None):
 
     fig = plt.figure(figsize=(12, 8))
     ax = fig.add_subplot(111, projection='3d')
-    x_min, x_max = np.min(tx_positions[:, 0]), np.max(tx_positions[:, 0])
-    y_min, y_max = np.min(tx_positions[:, 1]), np.max(tx_positions[:, 1])
+    # Filter out NaN values before interpolation
+    tx_positions = np.array(tx_positions)
+    coverage_values = np.array(coverage_values)
+    mask = (~np.isnan(tx_positions).any(axis=1)) & (~np.isnan(coverage_values))
+    tx_positions_valid = tx_positions[mask]
+    coverage_values_valid = coverage_values[mask]
+    if len(tx_positions_valid) == 0:
+        raise ValueError("No valid transmitter positions for coverage plot.")
+    x_min, x_max = np.min(tx_positions_valid[:, 0]), np.max(tx_positions_valid[:, 0])
+    y_min, y_max = np.min(tx_positions_valid[:, 1]), np.max(tx_positions_valid[:, 1])
     margin = 0.05
     x_margin = (x_max - x_min) * margin
     y_margin = (y_max - y_min) * margin
@@ -168,11 +176,11 @@ def plot_coverage_3d(data_or_csv, output_file=None):
         y_min - y_margin: y_max + y_margin: 100j
     ]
     grid_z = griddata(
-        points=tx_positions,
-        values=coverage_values,
+        points=tx_positions_valid,
+        values=coverage_values_valid,
         xi=(grid_x, grid_y),
         method='cubic',
-        fill_value=np.min(coverage_values)
+        fill_value=np.min(coverage_values_valid)
     )
     surf = ax.plot_surface(grid_x, grid_y, grid_z, cmap='viridis', linewidth=0.5, antialiased=True, alpha=1.0, edgecolor='k')
     cbar = fig.colorbar(surf, ax=ax, shrink=0.5, aspect=5, label='Coverage', format='%.2e')
