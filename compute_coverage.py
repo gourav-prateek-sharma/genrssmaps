@@ -266,20 +266,42 @@ def main(argv: Optional[list] = None):
 
         # If the summary already exists, read already-processed filenames and resume
         import csv
+        # Track already-processed entries so we can resume safely.
         existing_filenames = set()
+        processed_positions = set()
         if os.path.exists(out_csv_final):
             try:
                 with open(out_csv_final, 'r', newline='') as ef:
                     reader = csv.reader(ef)
                     header = next(reader, None)
-                    fname_idx = 0
-                    if header and 'filename' in header:
-                        fname_idx = header.index('filename')
-                    for row in reader:
-                        if row:
-                            existing_filenames.add(row[fname_idx])
-                if args.verbose:
-                    print(f"Resuming: found {len(existing_filenames)} entries in {out_csv_final}")
+                    if header:
+                        # legacy format with filename column
+                        if 'filename' in header:
+                            fname_idx = header.index('filename')
+                            for row in reader:
+                                if row:
+                                    existing_filenames.add(row[fname_idx])
+                        # new format: x,y,z columns
+                        elif 'x' in header and 'y' in header and 'z' in header:
+                            x_idx = header.index('x')
+                            y_idx = header.index('y')
+                            z_idx = header.index('z')
+                            for row in reader:
+                                if not row:
+                                    continue
+                                try:
+                                    xs = row[x_idx]
+                                    ys = row[y_idx]
+                                    zs = row[z_idx]
+                                    # normalize to consistent string format for comparison
+                                    px = f"{float(xs):.6f}" if xs != '' else ''
+                                    py = f"{float(ys):.6f}" if ys != '' else ''
+                                    pz = f"{float(zs):.6f}" if zs != '' else ''
+                                    processed_positions.add((px, py, pz))
+                                except Exception:
+                                    continue
+                    if args.verbose:
+                        print(f"Resuming: found {len(existing_filenames)} filename entries and {len(processed_positions)} coordinate entries in {out_csv_final}")
             except Exception as e:
                 print(f"Warning: could not read existing output file '{out_csv_final}': {e}")
 
@@ -288,8 +310,8 @@ def main(argv: Optional[list] = None):
         with open(out_csv_final, mode, newline='') as out_f:
             writer = csv.writer(out_f)
             if mode == 'w':
-                # Build header based on number of thresholds
-                header = ['filename', 'x', 'y', 'z']
+                # Build header based on number of thresholds. New format: no filename column.
+                header = ['x', 'y', 'z']
                 for thr in thresholds:
                     header.append(f"coverage_thr{thr}")
                 writer.writerow(header)
@@ -297,8 +319,16 @@ def main(argv: Optional[list] = None):
             processed = 0
             # iterate files in deterministic order and append results as they complete
             for fname in sorted(os.listdir(dir_path)):
+                # Skip already-processed entries if possible. Prefer coordinate-based resume when available.
+                coords_for_fname = _parse_tx_coords_from_filename(fname, args.scene)
+                coords_key = None
+                if coords_for_fname is not None:
+                    coords_key = (f"{coords_for_fname[0]:.6f}", f"{coords_for_fname[1]:.6f}", f"{coords_for_fname[2]:.6f}")
+                if coords_key and coords_key in processed_positions:
+                    # already processed by coordinates
+                    continue
                 if fname in existing_filenames:
-                    # skip already-processed
+                    # legacy resume by filename
                     continue
                 fpath = os.path.join(dir_path, fname)
                 if not os.path.isfile(fpath):
@@ -327,7 +357,21 @@ def main(argv: Optional[list] = None):
                                 tx_x, tx_y, tx_z = coords
                     
                     # Compute coverage for each threshold
-                    row = [fname, tx_x, tx_y, tx_z]
+                    # Write row without filename; ensure numeric coords are written as floats or empty strings
+                    if tx_x == "":
+                        row_x = ""
+                        row_y = ""
+                        row_z = ""
+                    else:
+                        try:
+                            row_x = f"{float(tx_x):.6f}"
+                            row_y = f"{float(tx_y):.6f}"
+                            row_z = f"{float(tx_z):.6f}"
+                        except Exception:
+                            row_x = tx_x
+                            row_y = tx_y
+                            row_z = tx_z
+                    row = [row_x, row_y, row_z]
                     for thr in thresholds:
                         coverage = compute_coverage_from_arr(arr, threshold_dbm=thr)
                         row.append(coverage)

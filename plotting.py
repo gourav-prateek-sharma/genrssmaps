@@ -21,7 +21,27 @@ except Exception as e:
     print(f"Error importing rate helpers: {e}")
     raise
 
-def plot_rss_3d(csv_file, scale_factor=1.0, min_rss=None, max_rss=None, output_file=None):
+
+def _detect_xy_columns(df: pd.DataFrame):
+    """Return (x_col, y_col) pair from dataframe using common names or fallback to first two numeric cols."""
+    candidates = [
+        ('x', 'y'),
+        ('tx_x', 'tx_y'),
+        ('lon', 'lat'),
+        ('longitude', 'latitude'),
+        ('easting', 'northing'),
+        ('east', 'north'),
+    ]
+    for a, b in candidates:
+        if a in df.columns and b in df.columns:
+            return a, b
+    # Fallback: choose first two numeric columns
+    numeric_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
+    if len(numeric_cols) >= 2:
+        return numeric_cols[0], numeric_cols[1]
+    raise ValueError(f"Could not detect X/Y columns. Available columns: {list(df.columns)}")
+
+def plot_rss_3d(csv_file, scale_factor=1.0, min_rss=None, max_rss=None, output_file=None, verbose: bool = False):
     """
     Create a 3D plot of RSS values from a CSV file.
     Args:
@@ -32,17 +52,21 @@ def plot_rss_3d(csv_file, scale_factor=1.0, min_rss=None, max_rss=None, output_f
         output_file (str): Path to save the plot image (optional)
     """
     rss = pd.read_csv(csv_file, header=None).values
+    if verbose:
+        print(f"Loaded RSS file: {csv_file}, shape={rss.shape}, min={np.nanmin(rss):.3g}, max={np.nanmax(rss):.3g}")
     dir_path = os.path.dirname(csv_file)
     all_files = [f for f in os.listdir(dir_path) if f.startswith('rss_munich_') and (f.endswith('.csv') or f.endswith('.csv.gz'))]
     x_coords, y_coords = [], []
     for f in all_files:
         try:
-            coords = f.replace('rss_munich_', '').replace('.csv.gz', '').replace('.csv', '')
-            x, y, _ = map(float, coords.split(','))
-            x_coords.append(x)
-            y_coords.append(y)
-        except:
+            tx_x, tx_y, _ = parse_tx_from_filename(f)
+            x_coords.append(tx_x)
+            y_coords.append(tx_y)
+        except Exception:
+            # skip files that don't match expected naming
             continue
+    if not x_coords or not y_coords:
+        raise ValueError(f"Could not determine grid extents from RSS filenames in {dir_path}")
     x_min, x_max = min(x_coords), max(x_coords)
     y_min, y_max = min(y_coords), max(y_coords)
     y, x = np.mgrid[0:rss.shape[0], 0:rss.shape[1]]
@@ -70,13 +94,12 @@ def plot_rss_3d(csv_file, scale_factor=1.0, min_rss=None, max_rss=None, output_f
                        label=f'RSS (dB, normalized, scale={scale_factor})',
                        format='%.1f')
     filename = os.path.basename(csv_file)
+    tx_x = tx_y = tx_z = float('nan')
     try:
-        if filename.startswith('rss_munich_'):
-            coords = filename.replace('rss_munich_', '').replace('.csv.gz', '').replace('.csv', '')
-            tx_x, tx_y, tx_z = map(float, coords.split(','))
-            z_offset = (np.max(rss_normalized) - np.min(rss_normalized)) * 0.05
-            ax.scatter(tx_x, tx_y, np.min(rss_normalized) - z_offset, 
-                      color='red', marker='^', s=200, label='Transmitter Position')
+        tx_x, tx_y, tx_z = parse_tx_from_filename(filename)
+        z_offset = (np.max(rss_normalized) - np.min(rss_normalized)) * 0.05
+        ax.scatter(tx_x, tx_y, np.min(rss_normalized) - z_offset,
+                   color='red', marker='^', s=200, label='Transmitter Position')
     except Exception as e:
         print(f"Warning: Could not plot transmitter position: {e}")
     ax.set_xlabel(f'X coordinate (meters) [{x_min:.1f}, {x_max:.1f}]')
@@ -85,9 +108,12 @@ def plot_rss_3d(csv_file, scale_factor=1.0, min_rss=None, max_rss=None, output_f
     ax.grid(True, linestyle='--', alpha=0.6)
     ax.view_init(elev=25, azim=45)
     plt.style.use('default')
-    ax.set_title('Radio Signal Strength Map\n' + 
-                 f'Transmitter at ({tx_x:.1f}, {tx_y:.1f}, {tx_z:.1f})',
-                 pad=20)
+    # Safe title: only show parsed transmitter coords if available
+    if not np.isnan(tx_x) and not np.isnan(tx_y) and not np.isnan(tx_z):
+        title_tx = f'Transmitter at ({tx_x:.1f}, {tx_y:.1f}, {tx_z:.1f})'
+    else:
+        title_tx = 'Transmitter at (unknown)'
+    ax.set_title('Radio Signal Strength Map\n' + title_tx, pad=20)
     ax.legend()
     plt.tight_layout()
     if output_file:
@@ -106,12 +132,13 @@ def plot_rss_3d(csv_file, scale_factor=1.0, min_rss=None, max_rss=None, output_f
             print(f"Error saving plot to {output_file}: {e}")
     plt.show()
 
-def plot_coverage_3d(data_or_csv, output_file=None):
+def plot_coverage_3d(data_or_csv, output_file=None, verbose: bool = False):
     """
     Plot a 3D coverage map from either a directory of RSS files or a coverage summary CSV file.
     Args:
         data_or_csv (str): Directory containing RSS files (for raw computation) or path to coverage summary CSV file.
         output_file (str): Path to save the plot image (optional)
+        verbose (bool): If True, print verbose diagnostics
     """
     import os
     import pandas as pd
@@ -121,7 +148,9 @@ def plot_coverage_3d(data_or_csv, output_file=None):
     from scipy.interpolate import griddata
 
     if os.path.isdir(data_or_csv):
-        all_files = [f for f in os.listdir(data_or_csv) if f.startswith('rss_munich_') and f.endswith('.csv.gz')]
+        # accept both .csv and .csv.gz and standard rss_munich_ prefix
+        all_files = [f for f in os.listdir(data_or_csv)
+                     if f.startswith('rss_munich_') and (f.endswith('.csv') or f.endswith('.csv.gz'))]
         tx_positions = []
         coverage_values = []
         total_files = len(all_files)
@@ -129,16 +158,17 @@ def plot_coverage_3d(data_or_csv, output_file=None):
         for idx, filename in enumerate(all_files, 1):
             print(f"\rProcessing file {idx}/{total_files} ({filename})", end="", flush=True)
             try:
-                coords = filename.replace('rss_munich_', '').replace('.csv.gz', '')
-                tx_x, tx_y, tx_z = map(float, coords.split(','))
+                # parse transmitter coordinates from filename
+                tx_x, tx_y, tx_z = parse_tx_from_filename(filename)
                 file_path = os.path.join(data_or_csv, filename)
                 rss_array = pd.read_csv(file_path, header=None).values
-                from coverage_helpers import compute_coverage_from_arr
                 coverage = compute_coverage_from_arr(rss_array)
                 tx_positions.append([tx_x, tx_y])
                 coverage_values.append(coverage)
+                if verbose:
+                    print(f"Processed {filename}: tx_position=({tx_x}, {tx_y}), coverage={coverage}")
             except Exception as e:
-                print(f"\nError processing {filename}: {e}")
+                print(f"\nSkipping {filename}: {e}")
                 continue
         print("\nAll files processed successfully!")
         print(f"Generated coverage data for {len(tx_positions)} transmitter positions")
@@ -146,15 +176,22 @@ def plot_coverage_3d(data_or_csv, output_file=None):
         coverage_values = np.array(coverage_values)
     else:
         df = pd.read_csv(data_or_csv)
-        tx_positions = df[['x', 'y']].values
-        # Auto-detect coverage column
+        x_col, y_col = _detect_xy_columns(df)
+        tx_positions = df[[x_col, y_col]].values
+        # Auto-detect coverage column: prefer exact 'coverage', then coverage_thr*, then any column containing 'coverage'
         if 'coverage' in df.columns:
             coverage_values = df['coverage'].values
+            if verbose:
+                print(f"Using coverage column: 'coverage'")
         else:
             cov_cols = [c for c in df.columns if c.startswith('coverage_thr')]
             if not cov_cols:
-                raise ValueError("No coverage column found in summary file. Columns: " + str(df.columns))
+                cov_cols = [c for c in df.columns if 'coverage' in c]
+            if not cov_cols:
+                raise ValueError("No coverage column found in summary file. Columns: " + str(list(df.columns)))
             coverage_values = df[cov_cols[0]].values
+            if verbose:
+                print(f"Using coverage column: {cov_cols[0]}")
 
     fig = plt.figure(figsize=(12, 8))
     ax = fig.add_subplot(111, projection='3d')
@@ -165,7 +202,24 @@ def plot_coverage_3d(data_or_csv, output_file=None):
     tx_positions_valid = tx_positions[mask]
     coverage_values_valid = coverage_values[mask]
     if len(tx_positions_valid) == 0:
-        raise ValueError("No valid transmitter positions for coverage plot.")
+        print("Warning: No valid transmitter positions found after filtering NaNs. Skipping coverage surface plot.")
+        # If there are any non-NaN coverage_values but positions are invalid, attempt scatter of original valid rows
+        valid_rows = (~np.isnan(tx_positions).any(axis=1)) & (~np.isnan(coverage_values))
+        if valid_rows.sum() > 0:
+            fig = plt.figure(figsize=(12, 8))
+            ax = fig.add_subplot(111, projection='3d')
+            ax.scatter(tx_positions[valid_rows, 0], tx_positions[valid_rows, 1], coverage_values[valid_rows], c=coverage_values[valid_rows], cmap='viridis')
+            ax.set_xlabel('X coordinate (meters)')
+            ax.set_ylabel('Y coordinate (meters)')
+            ax.set_zlabel('Coverage')
+            ax.set_title('Coverage Map (scatter)')
+            plt.tight_layout()
+            if output_file:
+                plt.savefig(output_file, dpi=300, bbox_inches='tight', pad_inches=0.2)
+                print(f"Plot saved to {output_file}")
+            plt.show()
+            return
+        return
     x_min, x_max = np.min(tx_positions_valid[:, 0]), np.max(tx_positions_valid[:, 0])
     y_min, y_max = np.min(tx_positions_valid[:, 1]), np.max(tx_positions_valid[:, 1])
     margin = 0.05
@@ -196,7 +250,7 @@ def plot_coverage_3d(data_or_csv, output_file=None):
         print(f"Plot saved to {output_file}")
     plt.show()
 
-def plot_rate_3d(data_or_csv, output_file=None):
+def plot_rate_3d(data_or_csv, output_file=None, verbose: bool = False):
     """
     Plot a 3D rate map from either a directory of RSS files or a rate summary CSV file.
     Args:
@@ -211,7 +265,6 @@ def plot_rate_3d(data_or_csv, output_file=None):
     from scipy.interpolate import griddata
 
     if os.path.isdir(data_or_csv):
-        from rate_helpers import compute_rate_from_csv
         all_files = [f for f in os.listdir(data_or_csv) if f.startswith('rss_munich_') and (f.endswith('.csv') or f.endswith('.csv.gz'))]
         tx_positions = []
         rate_values = []
@@ -220,23 +273,29 @@ def plot_rate_3d(data_or_csv, output_file=None):
         for idx, filename in enumerate(all_files, 1):
             print(f"\rProcessing file {idx}/{total_files} ({filename})", end="", flush=True)
             try:
-                coords = filename.replace('rss_munich_', '').replace('.csv.gz', '').replace('.csv', '')
-                tx_x, tx_y, tx_z = map(float, coords.split(','))
+                tx_x, tx_y, tx_z = parse_tx_from_filename(filename)
                 file_path = os.path.join(data_or_csv, filename)
                 rate = compute_rate_from_csv(file_path)
                 tx_positions.append([tx_x, tx_y])
                 rate_values.append(rate)
+                if verbose:
+                    print(f"Processed {filename}: tx_position=({tx_x}, {tx_y}), rate={rate}")
             except Exception as e:
-                print(f"\nError processing {filename}: {e}")
+                print(f"\nSkipping {filename}: {e}")
                 continue
-        print("\nAll files processed successfully!")
+        print("\nAll files processed (where parsable)!")
         print(f"Generated rate data for {len(tx_positions)} transmitter positions")
         tx_positions = np.array(tx_positions)
         rate_values = np.array(rate_values)
     else:
         df = pd.read_csv(data_or_csv)
-        tx_positions = df[['x', 'y']].values
+        x_col, y_col = _detect_xy_columns(df)
+        tx_positions = df[[x_col, y_col]].values
         rate_values = df['avg_rate'].values if 'avg_rate' in df.columns else df['rate'].values
+        if verbose:
+            print(f"Detected X/Y columns for rate: {x_col}, {y_col}")
+            print(f"Sample tx_positions (first 5):\n{tx_positions[:5]}")
+            print(f"Sample rate values (first 10):\n{rate_values[:10]}")
 
     fig = plt.figure(figsize=(12, 8))
     ax = fig.add_subplot(111, projection='3d')
@@ -283,19 +342,22 @@ def main():
                           help='Maximum RSS value for normalization')
     rss_parser.add_argument('--output', type=str, default=None,
                           help='Path to save the plot image (e.g., plot.png, plot.pdf)')
+    rss_parser.add_argument('--verbose', action='store_true', help='Enable verbose diagnostics')
     coverage_parser = subparsers.add_parser('coverage', help='Plot 3D coverage map from RSS directory or coverage summary CSV')
     coverage_parser.add_argument('data_or_csv', help='Path to directory with RSS files or coverage summary CSV file')
     coverage_parser.add_argument('--output', type=str, default=None, help='Path to save the plot image (e.g., coverage_plot.png)')
+    coverage_parser.add_argument('--verbose', action='store_true', help='Enable verbose diagnostics')
     rate_parser = subparsers.add_parser('rate', help='Plot 3D rate map from RSS directory or rate summary CSV')
     rate_parser.add_argument('data_or_csv', help='Path to directory with RSS files or rate summary CSV file')
     rate_parser.add_argument('--output', type=str, default=None, help='Path to save the plot image (e.g., rate_plot.png)')
+    rate_parser.add_argument('--verbose', action='store_true', help='Enable verbose diagnostics')
     args = parser.parse_args()
     if args.command == 'rss':
-        plot_rss_3d(args.csv_file, args.scale, args.min_rss, args.max_rss, args.output)
+        plot_rss_3d(args.csv_file, args.scale, args.min_rss, args.max_rss, args.output, verbose=args.verbose)
     elif args.command == 'coverage':
-        plot_coverage_3d(args.data_or_csv, args.output)
+        plot_coverage_3d(args.data_or_csv, args.output, verbose=args.verbose)
     elif args.command == 'rate':
-        plot_rate_3d(args.data_or_csv, args.output)
+        plot_rate_3d(args.data_or_csv, args.output, verbose=args.verbose)
     else:
         parser.print_help()
 
