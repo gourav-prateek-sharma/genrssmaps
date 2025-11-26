@@ -1,317 +1,276 @@
 #!/usr/bin/env python3
-"""
-Plotting utilities for RSS strength maps and coverage data.
-
-Provides functions to:
-1. Plot RSS strength from RSS data files (CSV, HDF5, NPZ, Parquet, Zarr)
-2. Plot coverage maps from summary CSV files with configurable thresholds
-3. CLI interface for both plotting modes
-"""
-
 import argparse
-import os
-import sys
-from typing import Optional, List, Union
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
+from scipy.interpolate import griddata
+import os
+from coverage_helpers import compute_coverage_from_arr
+from rate_helpers import compute_rate_from_arr
 
-try:
-    import matplotlib.pyplot as plt
-    import matplotlib.colors as colors
-    _HAS_MATPLOTLIB = True
-except Exception:
-    _HAS_MATPLOTLIB = False
-    plt = None
-    colors = None
-
-
-def _load_rss_array(file_path: str) -> np.ndarray:
-    """Load RSS array from various file formats (CSV, CSV.GZ, HDF5, NPZ, Parquet, Zarr)."""
-    lower = file_path.lower()
-    
-    if lower.endswith('.csv.gz') or lower.endswith('.csv'):
-        # CSV or CSV.GZ
-        df = pd.read_csv(file_path, header=None)
-        return df.values
-    
-    elif lower.endswith('.npz'):
-        # NPZ format
-        npz = np.load(file_path, allow_pickle=False)
-        keys = list(npz.keys())
-        if 'rss' in keys:
-            return npz['rss']
-        elif keys:
-            return npz[keys[0]]
-        else:
-            raise ValueError(f"No arrays found in {file_path}")
-    
-    elif lower.endswith('.h5') or lower.endswith('.hdf5'):
-        # HDF5 format
-        try:
-            import h5py
-        except ImportError:
-            raise ImportError("h5py is required for HDF5 files. Install via: pip install h5py")
-        with h5py.File(file_path, 'r') as f:
-            keys = list(f.keys())
-            if 'rss' in keys:
-                return f['rss'][()]
-            elif keys:
-                return f[keys[0]][()]
-            else:
-                raise ValueError(f"No datasets found in {file_path}")
-    
-    elif lower.endswith('.parquet'):
-        # Parquet format
-        df = pd.read_parquet(file_path)
-        return df.values
-    
-    elif lower.endswith('.zarr'):
-        # Zarr format
-        try:
-            import zarr
-        except ImportError:
-            raise ImportError("zarr is required for Zarr files. Install via: pip install zarr")
-        z = zarr.open(file_path, mode='r')
-        if hasattr(z, 'keys') and 'rss' in z.keys():
-            return np.array(z['rss'])
-        elif hasattr(z, 'keys'):
-            keys = list(z.keys())
-            if keys:
-                return np.array(z[keys[0]])
-        return np.array(z)
-    
-    else:
-        raise ValueError(f"Unsupported file format: {file_path}")
-
-
-def plot_rss_strength(file_path: str, output_path: Optional[str] = None, 
-                     title: Optional[str] = None, cmap: str = 'viridis',
-                     vmin: Optional[float] = None, vmax: Optional[float] = None,
-                     show: bool = False):
+def plot_rss_3d(csv_file, scale_factor=1.0, min_rss=None, max_rss=None, output_file=None):
     """
-    Plot RSS strength from an RSS data file.
-    
+    Create a 3D plot of RSS values from a CSV file.
     Args:
-        file_path (str): Path to RSS file (CSV, HDF5, NPZ, Parquet, Zarr)
-        output_path (str, optional): Path to save the plot image. If None, only shows if show=True
-        title (str, optional): Plot title. Defaults to filename
-        cmap (str): Matplotlib colormap name (default: 'viridis')
-        vmin (float, optional): Minimum value for colorbar
-        vmax (float, optional): Maximum value for colorbar
-        show (bool): Whether to display the plot (default: False)
-    
-    Returns:
-        matplotlib.figure.Figure: The figure object
+        csv_file (str): Path to the CSV file containing RSS values
+        scale_factor (float): Factor to scale the Z-axis (RSS values)
+        min_rss (float): Minimum RSS value for normalization (optional)
+        max_rss (float): Maximum RSS value for normalization (optional)
+        output_file (str): Path to save the plot image (optional)
     """
-    if not _HAS_MATPLOTLIB:
-        raise ImportError("matplotlib is required for plotting. Install via: pip install matplotlib")
-    
-    # Load RSS array
-    try:
-        rss_array = _load_rss_array(file_path)
-    except Exception as e:
-        raise RuntimeError(f"Error loading RSS file '{file_path}': {e}") from e
-    
-    # Convert to dBm if needed
-    with np.errstate(divide='ignore'):
-        rss_dbm = 10 * np.log10(rss_array)
-
-    # 3D surface plot: x/y are receiver coordinates, z is signal strength
+    rss = pd.read_csv(csv_file, header=None).values
+    dir_path = os.path.dirname(csv_file)
+    all_files = [f for f in os.listdir(dir_path) if f.startswith('rss_munich_') and (f.endswith('.csv') or f.endswith('.csv.gz'))]
+    x_coords, y_coords = [], []
+    for f in all_files:
+        try:
+            coords = f.replace('rss_munich_', '').replace('.csv.gz', '').replace('.csv', '')
+            x, y, _ = map(float, coords.split(','))
+            x_coords.append(x)
+            y_coords.append(y)
+        except:
+            continue
+    x_min, x_max = min(x_coords), max(x_coords)
+    y_min, y_max = min(y_coords), max(y_coords)
+    y, x = np.mgrid[0:rss.shape[0], 0:rss.shape[1]]
+    x_scale = (x_max - x_min) / rss.shape[1]
+    y_scale = (y_max - y_min) / rss.shape[0]
+    x = x_min + x * x_scale
+    y = y_min + y * y_scale
     fig = plt.figure(figsize=(12, 8))
     ax = fig.add_subplot(111, projection='3d')
-
-    ny, nx = rss_dbm.shape
-    x = np.arange(nx)
-    y = np.arange(ny)
-    X, Y = np.meshgrid(x, y)
-
-    # If grid is regular, plot surface
+    margin = 0.05
+    x_margin = (x_max - x_min) * margin
+    y_margin = (y_max - y_min) * margin
+    ax.set_xlim(x_min - x_margin, x_max + x_margin)
+    ax.set_ylim(y_min - y_margin, y_max + y_margin)
+    if min_rss is None:
+        min_rss = np.min(rss)
+    if max_rss is None:
+        max_rss = np.max(rss)
+    rss_positive = rss - np.min(rss) + 1
+    rss_normalized = np.log10(rss_positive) * scale_factor
+    surf = ax.plot_surface(x, y, rss_normalized, cmap='viridis',
+                          linewidth=0.5, antialiased=True, alpha=0.9,
+                          edgecolor='k', shade=True)
+    cbar = fig.colorbar(surf, ax=ax, shrink=0.5, aspect=5,
+                       label=f'RSS (dB, normalized, scale={scale_factor})',
+                       format='%.1f')
+    filename = os.path.basename(csv_file)
     try:
-        surf = ax.plot_surface(X, Y, rss_dbm, cmap=cmap, vmin=vmin, vmax=vmax, edgecolor='none')
-    except Exception:
-        # Fallback: scatter plot
-        ax.scatter(X.flatten(), Y.flatten(), rss_dbm.flatten(), c=rss_dbm.flatten(), cmap=cmap)
-        surf = None
-
-    if surf:
-        fig.colorbar(surf, ax=ax, shrink=0.5, aspect=10, label='RSS Strength (dBm)')
-
-    ax.set_xlabel('Receiver X Index')
-    ax.set_ylabel('Receiver Y Index')
-    ax.set_zlabel('RSS Strength (dBm)')
-    if title is None:
-        title = f"RSS Strength Map - {os.path.basename(file_path)}"
-    ax.set_title(title)
-
-    if output_path:
-        fig.savefig(output_path, dpi=150, bbox_inches='tight')
-        print(f"Saved plot to: {output_path}")
-    if show:
-        plt.show()
-    return fig
-
-
-def plot_coverage_map(summary_csv: str, thresholds: Optional[List[float]] = None,
-                     output_dir: Optional[str] = None, cmap: str = 'RdYlGn',
-                     show: bool = False):
-    """
-    Plot coverage maps from a summary CSV file with one subplot per threshold.
-    
-    The summary CSV should have columns: x, y, z, coverage_thr<threshold1>, coverage_thr<threshold2>, ...
-    
-    Args:
-        summary_csv (str): Path to summary CSV file
-        thresholds (list, optional): List of thresholds to plot. If None, plots all available
-        output_dir (str, optional): Directory to save plot images. If None, only shows if show=True
-        cmap (str): Matplotlib colormap name (default: 'RdYlGn')
-        show (bool): Whether to display the plots (default: False)
-    
-    Returns:
-        dict: Mapping of threshold -> figure object
-    """
-    if not _HAS_MATPLOTLIB:
-        raise ImportError("matplotlib is required for plotting. Install via: pip install matplotlib")
-    
-    # Load summary CSV
-    try:
-        df = pd.read_csv(summary_csv)
+        if filename.startswith('rss_munich_'):
+            coords = filename.replace('rss_munich_', '').replace('.csv.gz', '').replace('.csv', '')
+            tx_x, tx_y, tx_z = map(float, coords.split(','))
+            z_offset = (np.max(rss_normalized) - np.min(rss_normalized)) * 0.05
+            ax.scatter(tx_x, tx_y, np.min(rss_normalized) - z_offset, 
+                      color='red', marker='^', s=200, label='Transmitter Position')
     except Exception as e:
-        raise RuntimeError(f"Error loading summary CSV '{summary_csv}': {e}") from e
-    
-    # Find available coverage columns (support both coverage_thr-110p0 and coverage_thr110p0)
-    coverage_cols = [col for col in df.columns if col.startswith('coverage_thr')]
-    if not coverage_cols:
-        raise ValueError(f"No coverage columns found in {summary_csv}. Expected 'coverage_thr<threshold>'")
-
-    # Extract thresholds from column names (handle both with and without dash)
-    available_thresholds = []
-    col_map = {}  # Map normalized threshold string to actual column name
-    for col in coverage_cols:
-        thr_str = col.replace('coverage_thr', '')
-        thr_str_norm = thr_str.replace('-', '').replace('p', '.').replace('_', '')
+        print(f"Warning: Could not plot transmitter position: {e}")
+    ax.set_xlabel(f'X coordinate (meters) [{x_min:.1f}, {x_max:.1f}]')
+    ax.set_ylabel(f'Y coordinate (meters) [{y_min:.1f}, {y_max:.1f}]')
+    ax.set_zlabel('RSS (dB, normalized)')
+    ax.grid(True, linestyle='--', alpha=0.6)
+    ax.view_init(elev=25, azim=45)
+    plt.style.use('default')
+    ax.set_title('Radio Signal Strength Map\n' + 
+                 f'Transmitter at ({tx_x:.1f}, {tx_y:.1f}, {tx_z:.1f})',
+                 pad=20)
+    ax.legend()
+    plt.tight_layout()
+    if output_file:
         try:
-            thr = float(thr_str_norm)
-            available_thresholds.append(thr)
-            # Map both with and without dash for lookup
-            col_map[f"coverage_thr{str(thr).replace('.', 'p')}"] = col
-            col_map[f"coverage_thr-{str(thr).replace('.', 'p')}"] = col
-        except ValueError:
-            pass
+            output_dir = os.path.dirname(output_file)
+            if output_dir and not os.path.exists(output_dir):
+                os.makedirs(output_dir)
+            plt.savefig(output_file, 
+                       dpi=300, 
+                       bbox_inches='tight',
+                       pad_inches=0.2,
+                       facecolor='white',
+                       edgecolor='none')
+            print(f"Plot saved to {output_file}")
+        except Exception as e:
+            print(f"Error saving plot to {output_file}: {e}")
+    plt.show()
 
-    # Filter thresholds if specified
-    if thresholds is None:
-        thresholds = sorted(available_thresholds)
+def plot_coverage_3d(data_or_csv, output_file=None):
+    """
+    Plot a 3D coverage map from either a directory of RSS files or a coverage summary CSV file.
+    Args:
+        data_or_csv (str): Directory containing RSS files (for raw computation) or path to coverage summary CSV file.
+        output_file (str): Path to save the plot image (optional)
+    """
+    import os
+    import pandas as pd
+    import numpy as np
+    import matplotlib.pyplot as plt
+    from mpl_toolkits.mplot3d import Axes3D
+    from scipy.interpolate import griddata
+
+    if os.path.isdir(data_or_csv):
+        all_files = [f for f in os.listdir(data_or_csv) if f.startswith('rss_munich_') and f.endswith('.csv.gz')]
+        tx_positions = []
+        coverage_values = []
+        total_files = len(all_files)
+        print(f"Found {total_files} RSS files to process")
+        for idx, filename in enumerate(all_files, 1):
+            print(f"\rProcessing file {idx}/{total_files} ({filename})", end="", flush=True)
+            try:
+                coords = filename.replace('rss_munich_', '').replace('.csv.gz', '')
+                tx_x, tx_y, tx_z = map(float, coords.split(','))
+                file_path = os.path.join(data_or_csv, filename)
+                rss_array = pd.read_csv(file_path, header=None).values
+                from coverage_helpers import compute_coverage_from_arr
+                coverage = compute_coverage_from_arr(rss_array)
+                tx_positions.append([tx_x, tx_y])
+                coverage_values.append(coverage)
+            except Exception as e:
+                print(f"\nError processing {filename}: {e}")
+                continue
+        print("\nAll files processed successfully!")
+        print(f"Generated coverage data for {len(tx_positions)} transmitter positions")
+        tx_positions = np.array(tx_positions)
+        coverage_values = np.array(coverage_values)
     else:
-        thresholds = sorted(thresholds)
-        # Verify requested thresholds are available
-        for thr in thresholds:
-            col_name1 = f"coverage_thr{str(thr).replace('.', 'p')}"
-            col_name2 = f"coverage_thr-{str(thr).replace('.', 'p')}"
-            if col_name1 not in col_map and col_name2 not in col_map:
-                raise ValueError(f"Threshold {thr} not found in summary file. Available: {available_thresholds}")
+        df = pd.read_csv(data_or_csv)
+        tx_positions = df[['x', 'y']].values
+        coverage_values = df['coverage'].values
 
-    figures = {}
+    fig = plt.figure(figsize=(12, 8))
+    ax = fig.add_subplot(111, projection='3d')
+    x_min, x_max = np.min(tx_positions[:, 0]), np.max(tx_positions[:, 0])
+    y_min, y_max = np.min(tx_positions[:, 1]), np.max(tx_positions[:, 1])
+    margin = 0.05
+    x_margin = (x_max - x_min) * margin
+    y_margin = (y_max - y_min) * margin
+    grid_x, grid_y = np.mgrid[
+        x_min - x_margin: x_max + x_margin: 100j,
+        y_min - y_margin: y_max + y_margin: 100j
+    ]
+    grid_z = griddata(
+        points=tx_positions,
+        values=coverage_values,
+        xi=(grid_x, grid_y),
+        method='cubic',
+        fill_value=np.min(coverage_values)
+    )
+    surf = ax.plot_surface(grid_x, grid_y, grid_z, cmap='viridis', linewidth=0.5, antialiased=True, alpha=1.0, edgecolor='k')
+    cbar = fig.colorbar(surf, ax=ax, shrink=0.5, aspect=5, label='Coverage', format='%.2e')
+    ax.set_xlabel('X coordinate (meters)')
+    ax.set_ylabel('Y coordinate (meters)')
+    ax.set_zlabel('Coverage')
+    ax.grid(True, linestyle='--', alpha=0.6)
+    ax.view_init(elev=30, azim=45)
+    plt.title('Coverage Map', pad=20)
+    plt.tight_layout()
+    if output_file:
+        plt.savefig(output_file, dpi=300, bbox_inches='tight', pad_inches=0.2, facecolor='white', edgecolor='none')
+        print(f"Plot saved to {output_file}")
+    plt.show()
 
-    for thr in thresholds:
-        # Try both formats for column name
-        col_name1 = f"coverage_thr{str(thr).replace('.', 'p')}"
-        col_name2 = f"coverage_thr-{str(thr).replace('.', 'p')}"
-        col_name = col_map.get(col_name1) or col_map.get(col_name2)
+def plot_rate_3d(data_or_csv, output_file=None):
+    """
+    Plot a 3D rate map from either a directory of RSS files or a rate summary CSV file.
+    Args:
+        data_or_csv (str): Directory containing RSS files (for raw computation) or path to rate summary CSV file.
+        output_file (str): Path to save the plot image (optional)
+    """
+    import os
+    import pandas as pd
+    import numpy as np
+    import matplotlib.pyplot as plt
+    from mpl_toolkits.mplot3d import Axes3D
+    from scipy.interpolate import griddata
 
-        # Get x, y, z from dataframe
-        x = df['x'].values
-        y = df['y'].values
-        coverage = df[col_name].values
+    if os.path.isdir(data_or_csv):
+        from rate_helpers import compute_rate_from_csv
+        all_files = [f for f in os.listdir(data_or_csv) if f.startswith('rss_munich_') and (f.endswith('.csv') or f.endswith('.csv.gz'))]
+        tx_positions = []
+        rate_values = []
+        total_files = len(all_files)
+        print(f"Found {total_files} RSS files to process")
+        for idx, filename in enumerate(all_files, 1):
+            print(f"\rProcessing file {idx}/{total_files} ({filename})", end="", flush=True)
+            try:
+                coords = filename.replace('rss_munich_', '').replace('.csv.gz', '').replace('.csv', '')
+                tx_x, tx_y, tx_z = map(float, coords.split(','))
+                file_path = os.path.join(data_or_csv, filename)
+                rate = compute_rate_from_csv(file_path)
+                tx_positions.append([tx_x, tx_y])
+                rate_values.append(rate)
+            except Exception as e:
+                print(f"\nError processing {filename}: {e}")
+                continue
+        print("\nAll files processed successfully!")
+        print(f"Generated rate data for {len(tx_positions)} transmitter positions")
+        tx_positions = np.array(tx_positions)
+        rate_values = np.array(rate_values)
+    else:
+        df = pd.read_csv(data_or_csv)
+        tx_positions = df[['x', 'y']].values
+        rate_values = df['avg_rate'].values if 'avg_rate' in df.columns else df['rate'].values
 
-        # 3D surface plot: x/y are transmitter coordinates, z is coverage
-        fig = plt.figure(figsize=(12, 8))
-        ax = fig.add_subplot(111, projection='3d')
+    fig = plt.figure(figsize=(12, 8))
+    ax = fig.add_subplot(111, projection='3d')
+    x_min, x_max = np.min(tx_positions[:, 0]), np.max(tx_positions[:, 0])
+    y_min, y_max = np.min(tx_positions[:, 1]), np.max(tx_positions[:, 1])
+    margin = 0.05
+    x_margin = (x_max - x_min) * margin
+    y_margin = (y_max - y_min) * margin
+    grid_x, grid_y = np.mgrid[
+        x_min - x_margin: x_max + x_margin: 100j,
+        y_min - y_margin: y_max + y_margin: 100j
+    ]
+    grid_z = griddata(
+        points=tx_positions,
+        values=rate_values,
+        xi=(grid_x, grid_y),
+        method='cubic',
+        fill_value=np.min(rate_values)
+    )
+    surf = ax.plot_surface(grid_x, grid_y, grid_z, cmap='plasma', linewidth=0.5, antialiased=True, alpha=1.0, edgecolor='k')
+    cbar = fig.colorbar(surf, ax=ax, shrink=0.5, aspect=5, label='Rate (bits/s/Hz)', format='%.2e')
+    ax.set_xlabel('X coordinate (meters)')
+    ax.set_ylabel('Y coordinate (meters)')
+    ax.set_zlabel('Rate (bits/s/Hz)')
+    ax.grid(True, linestyle='--', alpha=0.6)
+    ax.view_init(elev=30, azim=45)
+    plt.title('Rate Map', pad=20)
+    plt.tight_layout()
+    if output_file:
+        plt.savefig(output_file, dpi=300, bbox_inches='tight', pad_inches=0.2, facecolor='white', edgecolor='none')
+        print(f"Plot saved to {output_file}")
+    plt.show()
 
-        mask = (~np.isnan(x)) & (~np.isnan(y)) & (~np.isnan(coverage))
-        x_plot = x[mask]
-        y_plot = y[mask]
-        z_plot = coverage[mask]
-
-        # Try to create a grid for surface plot
-        try:
-            from scipy.interpolate import griddata
-            xi = np.linspace(np.min(x_plot), np.max(x_plot), 100)
-            yi = np.linspace(np.min(y_plot), np.max(y_plot), 100)
-            XI, YI = np.meshgrid(xi, yi)
-            ZI = griddata((x_plot, y_plot), z_plot, (XI, YI), method='linear')
-            surf = ax.plot_surface(XI, YI, ZI, cmap=cmap, edgecolor='none')
-        except Exception:
-            # Fallback: scatter plot
-            surf = ax.scatter(x_plot, y_plot, z_plot, c=z_plot, cmap=cmap)
-
-        fig.colorbar(surf, ax=ax, shrink=0.5, aspect=10, label='Coverage')
-        ax.set_xlabel('Transmitter X Coordinate')
-        ax.set_ylabel('Transmitter Y Coordinate')
-        ax.set_zlabel('Coverage')
-        ax.set_title(f"Coverage Map @ {thr} dBm")
-
-        figures[thr] = fig
-
-        if output_dir:
-            os.makedirs(output_dir, exist_ok=True)
-            out_file = os.path.join(output_dir, f"coverage_map_thr{str(thr).replace('.', 'p')}.png")
-            fig.savefig(out_file, dpi=150, bbox_inches='tight')
-            print(f"Saved plot to: {out_file}")
-        if show:
-            plt.show()
-    return figures
-
-
-def main(argv: Optional[list] = None):
-    """CLI interface for plotting."""
-    parser = argparse.ArgumentParser(description="Plot RSS strength maps and coverage data")
-    subparsers = parser.add_subparsers(dest='command', help='Command to execute')
-    
-    # Subcommand: plot RSS strength
-    rss_parser = subparsers.add_parser('rss', help='Plot RSS strength from a file')
-    rss_parser.add_argument('file', type=str, help='Path to RSS file (CSV, HDF5, NPZ, Parquet, Zarr)')
-    rss_parser.add_argument('--output', type=str, default=None, help='Output image path')
-    rss_parser.add_argument('--title', type=str, default=None, help='Plot title')
-    rss_parser.add_argument('--cmap', type=str, default='viridis', help='Colormap name (default: viridis)')
-    rss_parser.add_argument('--vmin', type=float, default=None, help='Min value for colorbar')
-    rss_parser.add_argument('--vmax', type=float, default=None, help='Max value for colorbar')
-    rss_parser.add_argument('--show', action='store_true', help='Display plot')
-    
-    # Subcommand: plot coverage
-    cov_parser = subparsers.add_parser('coverage', help='Plot coverage maps from summary CSV')
-    cov_parser.add_argument('summary_csv', type=str, help='Path to summary CSV file')
-    cov_parser.add_argument('--thresholds', type=float, nargs='+', default=None,
-                           help='Thresholds to plot (space-separated). If not specified, plots all')
-    cov_parser.add_argument('--output-dir', type=str, default=None, help='Output directory for images')
-    cov_parser.add_argument('--cmap', type=str, default='RdYlGn', help='Colormap name (default: RdYlGn)')
-    cov_parser.add_argument('--show', action='store_true', help='Display plots')
-    
-    args = parser.parse_args(argv)
-    
-    if not _HAS_MATPLOTLIB:
-        print("Error: matplotlib is required for plotting. Install via: pip install matplotlib")
-        sys.exit(1)
-    
+def main():
+    parser = argparse.ArgumentParser(description='Plot 3D RSS map, coverage map, or rate map from CSV files.')
+    subparsers = parser.add_subparsers(dest='command', help='Command to run')
+    rss_parser = subparsers.add_parser('rss', help='Plot 3D RSS map from single CSV file')
+    rss_parser.add_argument('csv_file', help='Path to the CSV file containing RSS values')
+    rss_parser.add_argument('--scale', type=float, default=1.0,
+                          help='Scale factor for RSS values (default: 1.0)')
+    rss_parser.add_argument('--min_rss', type=float, default=None,
+                          help='Minimum RSS value for normalization')
+    rss_parser.add_argument('--max_rss', type=float, default=None,
+                          help='Maximum RSS value for normalization')
+    rss_parser.add_argument('--output', type=str, default=None,
+                          help='Path to save the plot image (e.g., plot.png, plot.pdf)')
+    coverage_parser = subparsers.add_parser('coverage', help='Plot 3D coverage map from RSS directory or coverage summary CSV')
+    coverage_parser.add_argument('data_or_csv', help='Path to directory with RSS files or coverage summary CSV file')
+    coverage_parser.add_argument('--output', type=str, default=None, help='Path to save the plot image (e.g., coverage_plot.png)')
+    rate_parser = subparsers.add_parser('rate', help='Plot 3D rate map from RSS directory or rate summary CSV')
+    rate_parser.add_argument('data_or_csv', help='Path to directory with RSS files or rate summary CSV file')
+    rate_parser.add_argument('--output', type=str, default=None, help='Path to save the plot image (e.g., rate_plot.png)')
+    args = parser.parse_args()
     if args.command == 'rss':
-        try:
-            plot_rss_strength(args.file, output_path=args.output, title=args.title,
-                            cmap=args.cmap, vmin=args.vmin, vmax=args.vmax, show=args.show)
-        except Exception as e:
-            print(f"Error: {e}")
-            sys.exit(1)
-    
+        plot_rss_3d(args.csv_file, args.scale, args.min_rss, args.max_rss, args.output)
     elif args.command == 'coverage':
-        try:
-            plot_coverage_map(args.summary_csv, thresholds=args.thresholds,
-                            output_dir=args.output_dir, cmap=args.cmap, show=args.show)
-        except Exception as e:
-            print(f"Error: {e}")
-            sys.exit(1)
-    
+        plot_coverage_3d(args.data_or_csv, args.output)
+    elif args.command == 'rate':
+        plot_rate_3d(args.data_or_csv, args.output)
     else:
         parser.print_help()
-        sys.exit(1)
-
 
 if __name__ == '__main__':
     main()
