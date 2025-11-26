@@ -171,21 +171,26 @@ def plot_coverage_map(summary_csv: str, thresholds: Optional[List[float]] = None
     except Exception as e:
         raise RuntimeError(f"Error loading summary CSV '{summary_csv}': {e}") from e
     
-    # Find available coverage columns
+    # Find available coverage columns (support both coverage_thr-110p0 and coverage_thr110p0)
     coverage_cols = [col for col in df.columns if col.startswith('coverage_thr')]
     if not coverage_cols:
         raise ValueError(f"No coverage columns found in {summary_csv}. Expected 'coverage_thr<threshold>'")
-    
-    # Extract thresholds from column names
+
+    # Extract thresholds from column names (handle both with and without dash)
     available_thresholds = []
+    col_map = {}  # Map normalized threshold string to actual column name
     for col in coverage_cols:
         thr_str = col.replace('coverage_thr', '')
+        thr_str_norm = thr_str.replace('-', '').replace('p', '.').replace('_', '')
         try:
-            thr = float(thr_str.replace('p', '.'))
+            thr = float(thr_str_norm)
             available_thresholds.append(thr)
+            # Map both with and without dash for lookup
+            col_map[f"coverage_thr{str(thr).replace('.', 'p')}"] = col
+            col_map[f"coverage_thr-{str(thr).replace('.', 'p')}"] = col
         except ValueError:
             pass
-    
+
     # Filter thresholds if specified
     if thresholds is None:
         thresholds = sorted(available_thresholds)
@@ -193,14 +198,18 @@ def plot_coverage_map(summary_csv: str, thresholds: Optional[List[float]] = None
         thresholds = sorted(thresholds)
         # Verify requested thresholds are available
         for thr in thresholds:
-            col_name = f"coverage_thr{str(thr).replace('.', 'p')}"
-            if col_name not in coverage_cols:
+            col_name1 = f"coverage_thr{str(thr).replace('.', 'p')}"
+            col_name2 = f"coverage_thr-{str(thr).replace('.', 'p')}"
+            if col_name1 not in col_map and col_name2 not in col_map:
                 raise ValueError(f"Threshold {thr} not found in summary file. Available: {available_thresholds}")
-    
+
     figures = {}
-    
+
     for thr in thresholds:
-        col_name = f"coverage_thr{str(thr).replace('.', 'p')}"
+        # Try both formats for column name
+        col_name1 = f"coverage_thr{str(thr).replace('.', 'p')}"
+        col_name2 = f"coverage_thr-{str(thr).replace('.', 'p')}"
+        col_name = col_map.get(col_name1) or col_map.get(col_name2)
         
         # Get x, y, z from dataframe
         x = df['x'].values
