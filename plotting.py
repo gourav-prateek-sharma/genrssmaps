@@ -115,32 +115,32 @@ def plot_rss_strength(file_path: str, output_path: Optional[str] = None,
     # Convert to dBm if needed
     with np.errstate(divide='ignore'):
         rss_dbm = 10 * np.log10(rss_array)
-    
-    # Create figure
-    fig, ax = plt.subplots(figsize=(12, 8))
-    
-    # Plot
-    im = ax.imshow(rss_dbm, cmap=cmap, aspect='auto', vmin=vmin, vmax=vmax, origin='lower')
-    
-    # Colorbar
-    cbar = plt.colorbar(im, ax=ax, label='RSS Strength (dBm)')
-    
-    # Labels and title
-    ax.set_xlabel('X Grid Index')
-    ax.set_ylabel('Y Grid Index')
+
+    # 3D surface plot: x/y are receiver coordinates, z is signal strength
+    fig = plt.figure(figsize=(12, 8))
+    ax = fig.add_subplot(111, projection='3d')
+
+    # Generate receiver grid coordinates
+    ny, nx = rss_dbm.shape
+    x = np.arange(nx)
+    y = np.arange(ny)
+    X, Y = np.meshgrid(x, y)
+
+    surf = ax.plot_surface(X, Y, rss_dbm, cmap=cmap, vmin=vmin, vmax=vmax, edgecolor='none')
+    fig.colorbar(surf, ax=ax, shrink=0.5, aspect=10, label='RSS Strength (dBm)')
+
+    ax.set_xlabel('Receiver X Index')
+    ax.set_ylabel('Receiver Y Index')
+    ax.set_zlabel('RSS Strength (dBm)')
     if title is None:
         title = f"RSS Strength Map - {os.path.basename(file_path)}"
     ax.set_title(title)
-    
-    # Save if requested
+
     if output_path:
         fig.savefig(output_path, dpi=150, bbox_inches='tight')
         print(f"Saved plot to: {output_path}")
-    
-    # Show if requested
     if show:
         plt.show()
-    
     return fig
 
 
@@ -210,77 +210,55 @@ def plot_coverage_map(summary_csv: str, thresholds: Optional[List[float]] = None
         col_name1 = f"coverage_thr{str(thr).replace('.', 'p')}"
         col_name2 = f"coverage_thr-{str(thr).replace('.', 'p')}"
         col_name = col_map.get(col_name1) or col_map.get(col_name2)
-        
+
         # Get x, y, z from dataframe
         x = df['x'].values
         y = df['y'].values
         coverage = df[col_name].values
-        
-        # Create a 2D grid if x, y are available and not empty
-        if not (np.all(pd.isna(x)) or np.all(pd.isna(y))):
-            # Try to create a grid
-            try:
-                # Create unique sorted positions
-                x_unique = np.unique(x[~np.isnan(x)])
-                y_unique = np.unique(y[~np.isnan(y)])
-                
-                if len(x_unique) > 1 and len(y_unique) > 1:
-                    # Create 2D grid
-                    X, Y = np.meshgrid(x_unique, y_unique)
-                    Z = np.zeros_like(X)
-                    
-                    # Fill grid with coverage values
-                    for i, (xi, yi, cov) in enumerate(zip(x, y, coverage)):
-                        if not np.isnan(xi) and not np.isnan(yi):
-                            xi_idx = np.where(x_unique == xi)[0]
-                            yi_idx = np.where(y_unique == yi)[0]
-                            if len(xi_idx) > 0 and len(yi_idx) > 0:
-                                Z[yi_idx[0], xi_idx[0]] = cov
-                    
-                    # Plot
-                    fig, ax = plt.subplots(figsize=(12, 8))
-                    im = ax.contourf(X, Y, Z, levels=20, cmap=cmap)
-                    cbar = plt.colorbar(im, ax=ax, label='Coverage')
-                    ax.set_xlabel('X Coordinate')
-                    ax.set_ylabel('Y Coordinate')
-                    ax.set_title(f"Coverage Map @ {thr} dBm")
-                    
-                    figures[thr] = fig
-                    
-                    if output_dir:
-                        os.makedirs(output_dir, exist_ok=True)
-                        out_file = os.path.join(output_dir, f"coverage_map_thr{str(thr).replace('.', 'p')}.png")
-                        fig.savefig(out_file, dpi=150, bbox_inches='tight')
-                        print(f"Saved plot to: {out_file}")
-                    
-                    if show:
-                        plt.show()
-                    
-                    continue
-            except Exception as e:
-                if os.environ.get('DEBUG'):
-                    print(f"Warning: Could not create 2D grid for threshold {thr}: {e}")
-        
-        # Fallback: bar plot by index
-        fig, ax = plt.subplots(figsize=(12, 6))
-        ax.bar(range(len(coverage)), coverage, color='steelblue', alpha=0.7)
-        ax.set_xlabel('Transmitter Index')
-        ax.set_ylabel('Coverage')
-        ax.set_ylim([0, 1])
-        ax.set_title(f"Coverage Distribution @ {thr} dBm")
-        ax.grid(axis='y', alpha=0.3)
-        
+
+        # 3D surface plot: x/y are transmitter coordinates, z is coverage
+        fig = plt.figure(figsize=(12, 8))
+        ax = fig.add_subplot(111, projection='3d')
+
+        # Remove NaNs for plotting
+        mask = (~np.isnan(x)) & (~np.isnan(y)) & (~np.isnan(coverage))
+        x_plot = x[mask]
+        y_plot = y[mask]
+        z_plot = coverage[mask]
+
+        # Try to create a grid if possible
+        try:
+            x_unique = np.unique(x_plot)
+            y_unique = np.unique(y_plot)
+            if len(x_unique) > 1 and len(y_unique) > 1:
+                X, Y = np.meshgrid(x_unique, y_unique)
+                Z = np.full_like(X, np.nan, dtype=float)
+                for xi, yi, cov in zip(x_plot, y_plot, z_plot):
+                    xi_idx = np.where(x_unique == xi)[0]
+                    yi_idx = np.where(y_unique == yi)[0]
+                    if len(xi_idx) > 0 and len(yi_idx) > 0:
+                        Z[yi_idx[0], xi_idx[0]] = cov
+                surf = ax.plot_surface(X, Y, Z, cmap=cmap, edgecolor='none')
+            else:
+                surf = ax.scatter(x_plot, y_plot, z_plot, c=z_plot, cmap=cmap)
+        except Exception:
+            surf = ax.scatter(x_plot, y_plot, z_plot, c=z_plot, cmap=cmap)
+
+        fig.colorbar(surf, ax=ax, shrink=0.5, aspect=10, label='Coverage')
+        ax.set_xlabel('Transmitter X Coordinate')
+        ax.set_ylabel('Transmitter Y Coordinate')
+        ax.set_zlabel('Coverage')
+        ax.set_title(f"Coverage Map @ {thr} dBm")
+
         figures[thr] = fig
-        
+
         if output_dir:
             os.makedirs(output_dir, exist_ok=True)
-            out_file = os.path.join(output_dir, f"coverage_dist_thr{str(thr).replace('.', 'p')}.png")
+            out_file = os.path.join(output_dir, f"coverage_map_thr{str(thr).replace('.', 'p')}.png")
             fig.savefig(out_file, dpi=150, bbox_inches='tight')
             print(f"Saved plot to: {out_file}")
-        
         if show:
             plt.show()
-    
     return figures
 
 
