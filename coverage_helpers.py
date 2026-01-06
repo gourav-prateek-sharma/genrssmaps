@@ -223,6 +223,67 @@ def compute_coverage_from_csv_gz(file_path, rx_grid_indices=None, threshold_dbm=
     return tx_x, tx_y, tx_z, coverage
 
 
+def compute_coverage_from_h5(file_path, rx_grid_indices=None, threshold_dbm=THRESHOLD, scene_name="munich"):
+    """
+    Given an HDF5 (.h5/.hdf5) RSS file whose name may encode the transmitter coordinates,
+    compute the coverage, optionally restricted to rx_grid_indices.
+    Returns: (tx_x, tx_y, tx_z, coverage)
+    """
+    filename = os.path.basename(file_path)
+
+    # Try parse patterns: tokenized _x{X}_y{Y}_z{Z} or legacy rss_{scene}_{x},{y},{z}.h5
+    m = re.search(r"_x(?P<x>[-+]?\d*\.?\d+)_y(?P<y>[-+]?\d*\.?\d+)_z(?P<z>[-+]?\d*\.?\d+)", filename)
+    if m:
+        tx_x, tx_y, tx_z = float(m.group('x')), float(m.group('y')), float(m.group('z'))
+    else:
+        m2 = re.match(r"rss_" + re.escape(scene_name) + r"_([\-\d.]+),([\-\d.]+),([\-\d.]+)\.(?:h5|hdf5)$", filename)
+        if m2:
+            tx_x, tx_y, tx_z = map(float, m2.groups())
+        else:
+            # fallback: last three numeric tokens
+            nums = re.findall(r"[-+]?\d*\.?\d+", filename)
+            if len(nums) >= 3:
+                tx_x, tx_y, tx_z = map(float, nums[-3:])
+            else:
+                raise ValueError(f"Filename {filename} does not match expected pattern for scene '{scene_name}'.")
+
+    try:
+        import h5py
+    except Exception as e:
+        raise ImportError("h5py is required to read .h5 files. Install via 'pip install h5py'") from e
+
+    with h5py.File(file_path, 'r') as f:
+        keys = list(f.keys())
+        if not keys:
+            raise ValueError(f"No datasets found in h5 file: {file_path}")
+        # prefer common dataset names
+        if 'rss' in keys:
+            key = 'rss'
+        elif 'rss_data' in keys:
+            key = 'rss_data'
+        else:
+            key = keys[0]
+        data = f[key][()]
+
+    rss_array = np.array(data)
+    if rss_array.ndim != 2:
+        rss_array = np.squeeze(rss_array)
+        if rss_array.ndim != 2:
+            raise ValueError(f"After squeezing, RSS array must have 2 dimensions. Current shape: {rss_array.shape}")
+
+    if rx_grid_indices is None:
+        coverage = compute_coverage_from_arr(rss_array, threshold_dbm=threshold_dbm)
+    else:
+        H, W = rss_array.shape
+        indices = np.array(rx_grid_indices, dtype=int)
+        valid_mask = (indices[:,0] >= 0) & (indices[:,0] < H) & (indices[:,1] >= 0) & (indices[:,1] < W)
+        indices = indices[valid_mask]
+        rss_selected = rss_array[indices[:,0], indices[:,1]]
+        coverage = compute_coverage_from_arr(rss_selected, threshold_dbm=threshold_dbm)
+
+    return tx_x, tx_y, tx_z, coverage
+
+
 def compute_coverage_for_directory_to_csv(dir_path, output_csv, threshold_dbm=THRESHOLD, scene_name="munich", rx_grid_indices=None):
     """
     For all rss_<scene_name>_*.csv.gz files in the directory, compute coverage and write to a CSV file.
